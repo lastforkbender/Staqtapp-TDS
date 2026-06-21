@@ -46,7 +46,7 @@ Physical .tds file layout on disk
 """
 
 from __future__ import annotations
-import json
+import json as _stdlib_json
 import mmap
 import os
 import shutil
@@ -59,6 +59,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
+
+try:
+    import simdjson
+    _parser = simdjson.Parser()
+    _stdlib_json.loads = lambda s, **kw: _parser.parse(s, recursive=True)
+    #print("[tds] simdjson active")
+except ImportError:
+    print("[tds] simdjson not available — stdlib json")
 
 from staqtapp_tds.tds_filesystem import (TDSDirectory, TDSEntry, TDSFileSystem, FmtID, DirFlags, ConcurrencyPool, decode_header, encode_header, _compute_subdir_offsets, _serialize_payload, _deserialize_payload, HEADER_SIZE, TDS_MAGIC,)
 
