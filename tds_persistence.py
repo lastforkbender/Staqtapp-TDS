@@ -355,7 +355,7 @@ class TDSWriter:
         try:
             with open(self._shadow, 'wb', buffering=1 << 20) as f:
                 f.write(file_header); f.write(data_block); f.write(index_block); f.flush()
-                os.fsync(f.file no())
+                os.fsync(f.fileno())
             shutil.move(str(self._shadow), str(self.path))
         except Exception:
             try:
