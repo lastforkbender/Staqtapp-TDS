@@ -1,6 +1,6 @@
 """
 ////////////////////////////////////////////////////////////////////////////////
->>> Staqtapp-TDS v1.6.0 / tds_filesystem.py
+>>> Staqtapp-TDS v1.7.1 / tds_filesystem.py
 ////////////////////////////////////////////////////////////////////////////////
 
 Staqtapp-TDS / Temporal Directory System
@@ -61,6 +61,12 @@ import numpy as np
 
 from staqtapp_tds.arena import SharedMemoryArena
 from staqtapp_tds.index import EntryIndex
+from staqtapp_tds.capabilities import CapabilityRegistry, ZoneCapability
+from staqtapp_tds.latency import LatencyPolicy
+from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode
+from staqtapp_tds.srz import SRZMetadata
+from staqtapp_tds.manifest import ManifestPolicy
+from staqtapp_tds.namespaces import ReservedNamespaces
 
 try:
     from numba import njit, prange
@@ -760,7 +766,15 @@ class TDSEntry:
 class TDSDirectory:
     def __init__(self, name: str, fmt_id: FmtID = FmtID.RAW_BINARY,
                  flags: int = DirFlags.NONE,
-                 parent: Optional['TDSDirectory'] = None):
+                 parent: Optional['TDSDirectory'] = None,
+                 manifest_policy: Optional[ManifestPolicy] = None,
+                 srz_enabled: bool = False,
+                 route_stamp: str = '',
+                 source_tags: Optional[List[str]] = None,
+                 aliases: Optional[List[str]] = None,
+                 latent_id: Optional[int] = None,
+                 telemetry_mode: Optional[TelemetryMode] = None,
+                 expected_lookup_ns: Optional[int] = None):
         self.name    = name
         self.fmt_id  = fmt_id
         self.flags   = flags
@@ -778,6 +792,45 @@ class TDSDirectory:
         self._bloom     = BloomFilter(capacity=8192)
         self.loop_cache = LoopCacheManager()
         self.symbols    = SymbolTable()
+
+        # v1.7 semantic infrastructure: read-once policy, optional SRZ, and
+        # lightweight telemetry. These are separate module objects; filesystem.py
+        # only orchestrates them.
+        if manifest_policy is None and parent is not None:
+            manifest_policy = parent.manifest_policy
+        self.manifest_policy = manifest_policy or ManifestPolicy.default()
+        self.reserved_namespaces: ReservedNamespaces = self.manifest_policy.reserved_namespaces
+        caps = self.manifest_policy.capabilities.names()
+        self.capabilities = CapabilityRegistry.from_names(caps)
+        self.capabilities.enable(ZoneCapability.NATIVE_INDEX_READY)
+        self.capabilities.enable(ZoneCapability.SHARED_ARENA)
+        if srz_enabled:
+            self.capabilities.enable(ZoneCapability.SRZ)
+        if self.reserved_namespaces.directory_names or self.reserved_namespaces.aliases or self.reserved_namespaces.route_ids:
+            self.capabilities.enable(ZoneCapability.RESERVED_NAMESPACES)
+        self.capabilities.enable(ZoneCapability.LATENCY)
+        self.capabilities.enable(ZoneCapability.TELEMETRY)
+        policy_latency = self.manifest_policy.latency_policy
+        if expected_lookup_ns is not None:
+            policy_latency = LatencyPolicy(
+                expected_lookup_ns=int(expected_lookup_ns),
+                soft_limit_ns=max(int(expected_lookup_ns) * 2, 1),
+                hard_limit_ns=max(int(expected_lookup_ns) * 20, 1),
+            )
+        mode = telemetry_mode if telemetry_mode is not None else self.manifest_policy.telemetry_mode
+        self.telemetry = DirectoryTelemetry(
+            mode=mode,
+            latency_policy=policy_latency,
+            trace_window=self.manifest_policy.trace_window,
+        )
+        self.srz = SRZMetadata.create(
+            enabled=srz_enabled,
+            route_stamp=route_stamp,
+            path=self.path(),
+            source_tags=source_tags or [],
+            aliases=aliases or [],
+            latent_id=latent_id,
+        )
 
     # --- schema ---
 
@@ -821,19 +874,29 @@ class TDSDirectory:
         return entry
 
     def read(self, name: str) -> Any:
+        start_ns = self.telemetry.start()
+        route_id = int(self.srz.route_id) if self.srz.enabled else 0
         # JIT Bloom gate — definite miss with no lock acquired
         if name not in self._bloom:
+            if self.telemetry.enabled:
+                self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=False, error_code=1, route_id=route_id)
             raise KeyError(f"No entry '{name}' in {self.name!r}")
         # Check registry first (lock-free path for hot entries)
         cached = self._registry.get(name)
         if cached is not None:
+            if self.telemetry.enabled:
+                self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=True, cold=False, route_id=route_id)
             return cached.data
-        # Fallback: lock and look up in _entries dict
+        # Fallback: lock and look up in EntryIndex
         with self._lock:
             entry = self._entries.get(name)
             if entry is None:
+                if self.telemetry.enabled:
+                    self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=False, error_code=2, route_id=route_id)
                 raise KeyError(f"No entry '{name}' in {self.name!r}")
         self._registry.put(name, entry)
+        if self.telemetry.enabled:
+            self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=True, cold=True, route_id=route_id)
         return entry.data
 
     def delete(self, name: str) -> None:
@@ -856,6 +919,10 @@ class TDSDirectory:
     # --- directory ops ---
 
     def mkdir(self, name: str, **kwargs) -> 'TDSDirectory':
+        allow_reserved = bool(kwargs.pop('allow_reserved', False))
+        if self.is_reserved_namespace(name) and not allow_reserved:
+            raise ValueError(f"Directory name {name!r} is reserved by manifest policy")
+        kwargs.setdefault('manifest_policy', self.manifest_policy)
         child = TDSDirectory(name=name, parent=self, **kwargs)
         with self._lock:
             self._children[name] = child
@@ -948,11 +1015,41 @@ class TDSDirectory:
             node = node.parent
         return '/' + '/'.join(reversed(parts))
 
+    def telemetry_snapshot(self) -> dict:
+        snap = self.telemetry.snapshot()
+        snap['path'] = self.path()
+        snap['route_id'] = int(self.srz.route_id) if self.srz.enabled else 0
+        return snap
+
+    def capability_names(self) -> List[str]:
+        return self.capabilities.names()
+
+    def is_reserved_namespace(self, name: str) -> bool:
+        return self.reserved_namespaces.is_reserved_directory(name)
+
+    def reserved_namespace_names(self) -> List[str]:
+        return self.reserved_namespaces.names()
+
+    def srz_record(self) -> np.ndarray:
+        t = self.telemetry.snapshot()
+        bucket_name = str(t.get('bucket', 'hot')).upper()
+        from staqtapp_tds.latency import LatencyBucket
+        bucket = int(LatencyBucket[bucket_name]) if bucket_name in LatencyBucket.__members__ else 0
+        return self.srz.compact_record(
+            dir_handle=-1,
+            expected_ns=self.telemetry.latency_policy.expected_lookup_ns,
+            avg_ns=int(t.get('avg_ns', 0)),
+            hits=int(t.get('hits', 0)),
+            misses=int(t.get('misses', 0)),
+            bucket=bucket,
+        )
+
     def __repr__(self) -> str:
         return (f"<TDSDirectory '{self.path()}' "
                 f"entries={len(self._entries)} "
                 f"subdirs={len(self._children)} "
-                f"fmt={self.fmt_id.name}>")
+                f"fmt={self.fmt_id.name} "
+                f"srz={self.srz.enabled}>")
 
 
 # ////////////////////////////////////////////////////////////////////////////////
@@ -979,13 +1076,15 @@ class TDSFileSystem:
         asyncio.run(db.awrite("key", value))
         value = asyncio.run(db.aread("key"))
     """
-    VERSION = (1, 5, 1)
+    VERSION = (1, 7, 1)
 
-    def __init__(self, name: str = "tds_root"):
+    def __init__(self, name: str = "tds_root", manifest_policy: Optional[ManifestPolicy] = None):
+        self.manifest_policy = manifest_policy or ManifestPolicy.default()
         self.root = TDSDirectory(
             name   = name,
             fmt_id = FmtID.RAW_BINARY,
             flags  = DirFlags.PARALLEL_IO | DirFlags.PROB_SORT | DirFlags.RECURSIVE,
+            manifest_policy = self.manifest_policy,
         )
         self._pool = ConcurrencyPool.acquire()
 
@@ -1022,6 +1121,28 @@ class TDSFileSystem:
             for child in children:
                 _walk(child)
 
+        _walk(self.root)
+        return result
+
+    def telemetry_snapshot(self) -> Dict[str, dict]:
+        result: Dict[str, dict] = {}
+        def _walk(node: TDSDirectory):
+            result[node.path()] = node.telemetry_snapshot()
+            with node._lock:
+                children = list(node._children.values())
+            for child in children:
+                _walk(child)
+        _walk(self.root)
+        return result
+
+    def capability_snapshot(self) -> Dict[str, List[str]]:
+        result: Dict[str, List[str]] = {}
+        def _walk(node: TDSDirectory):
+            result[node.path()] = node.capability_names()
+            with node._lock:
+                children = list(node._children.values())
+            for child in children:
+                _walk(child)
         _walk(self.root)
         return result
 
