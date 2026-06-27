@@ -1,0 +1,15 @@
+AI / Client
+   │
+   ▼
+TDSFileSystem
+   │
+   ├── TDSDirectory
+   │     ├── EntryIndex
+   │     ├── HybridRegistry
+   │     ├── SRZMetadata
+   │     ├── DirectoryTelemetry
+   │     └── CapabilityRegistry
+   │
+   └── TDSPersistence
+         ├── .tds files
+         └── .tds.meta sidecars
