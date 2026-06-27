@@ -1,5 +1,5 @@
 """
-EntryIndex facade for Staqtapp-TDS v1.6.0.
+EntryIndex facade for Staqtapp-TDS v1.7.0.
 
 The VFS talks to this small class only. Today it defaults to a pure-Python
 backend; later it can select a Cython/pybind11 backend that releases the GIL for
