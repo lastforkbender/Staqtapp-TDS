@@ -21,7 +21,7 @@ def test_manifest_default_and_inheritance(tmp_path):
     child = tmp_path / "a" / "b"
     child.mkdir(parents=True)
     policy = load_manifest(child, inherit=True)
-    assert policy.schema_version == "1.7.1"
+    assert policy.schema_version == "1.7.3"
     assert policy.manifest_hash
     assert policy.capabilities.supports(ZoneCapability.SRZ)
 
