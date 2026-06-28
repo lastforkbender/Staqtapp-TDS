@@ -63,7 +63,7 @@ from staqtapp_tds.arena import SharedMemoryArena
 from staqtapp_tds.index import EntryIndex
 from staqtapp_tds.capabilities import CapabilityRegistry, ZoneCapability
 from staqtapp_tds.latency import LatencyPolicy
-from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode
+from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode, TelemetryManager
 from staqtapp_tds.srz import SRZMetadata
 from staqtapp_tds.manifest import ManifestPolicy
 from staqtapp_tds.namespaces import ReservedNamespaces
@@ -74,6 +74,8 @@ from staqtapp_tds.serializers import CompressionPolicy, PayloadKind, choose_vari
 from staqtapp_tds.invariants import InvariantEngine
 from staqtapp_tds.provenance import ProvenanceTag, ProvenanceClass
 from staqtapp_tds.radix import RadixDirectoryRouter
+from staqtapp_tds.config import RuntimeConfig, ConfigRegistry
+from staqtapp_tds.crypto import CryptoProvider, NoopCryptoProvider
 
 try:
     from numba import njit, prange
@@ -766,6 +768,9 @@ class TDSEntry:
     raw_size: int = 0
     stored_size: int = 0
     provenance: ProvenanceTag = field(default_factory=ProvenanceTag)
+    config_id: str = ''
+    config_generation: int = 0
+    key_id: str | None = None
 
     def serialise(self) -> bytes:
         raw = _serialize_payload(self.data, self.fmt_id, self.codec)
@@ -832,7 +837,11 @@ class TDSDirectory:
                  aliases: Optional[List[str]] = None,
                  latent_id: Optional[int] = None,
                  telemetry_mode: Optional[TelemetryMode] = None,
-                 expected_lookup_ns: Optional[int] = None):
+                 expected_lookup_ns: Optional[int] = None,
+                 runtime_config: Optional[RuntimeConfig] = None,
+                 config_registry: Optional[ConfigRegistry] = None,
+                 crypto_provider: Optional[CryptoProvider] = None,
+                 telemetry_manager: Optional[TelemetryManager] = None):
         self.name    = name
         self.fmt_id  = fmt_id
         self.flags   = flags
@@ -853,6 +862,12 @@ class TDSDirectory:
         self.compression_policy = CompressionPolicy(enabled=False, codec='', threshold_bytes=4096)
         self.variables  = VariableControl(self)
         self.invariants = InvariantEngine()
+        self.config_registry = config_registry or (parent.config_registry if parent is not None else ConfigRegistry(runtime_config or RuntimeConfig.default()))
+        self.crypto_provider: CryptoProvider = crypto_provider or (parent.crypto_provider if parent is not None else NoopCryptoProvider())
+        self.telemetry_manager: TelemetryManager = telemetry_manager or (parent.telemetry_manager if parent is not None else TelemetryManager())
+        _cfg = self.config_registry.active()
+        self.compression_policy = CompressionPolicy(enabled=bool(_cfg.compression_enabled), codec=_cfg.compression, threshold_bytes=int(_cfg.compression_threshold_bytes))
+        self._policy_generation = int(_cfg.generation)
 
         # v1.7 semantic infrastructure: read-once policy, optional SRZ, and
         # lightweight telemetry. These are separate module objects; filesystem.py
@@ -924,8 +939,15 @@ class TDSDirectory:
               fmt_id: FmtID = FmtID.PICKLE_OBJ,
               compress: bool | None = False,
               codec: str = '', provenance: ProvenanceTag | str | None = None) -> 'TDSEntry':
+        _obs_start_ns = time.perf_counter_ns()
         self._validate(name, value)
+        cfg = self.config_registry.active()
+        if int(cfg.generation) != getattr(self, '_policy_generation', 0):
+            self.compression_policy = CompressionPolicy(enabled=bool(cfg.compression_enabled), codec=cfg.compression, threshold_bytes=int(cfg.compression_threshold_bytes))
+            self._policy_generation = int(cfg.generation)
         raw_fmt = FmtID(fmt_id & ~FmtID.COMPRESSED)
+        if codec == '':
+            codec = cfg.compression
         raw = _serialize_payload(value, raw_fmt, codec)
         do_compress = self.compression_policy.should_compress(len(raw), force=compress)
         final_fmt = FmtID(raw_fmt | FmtID.COMPRESSED) if do_compress else raw_fmt
@@ -936,12 +958,19 @@ class TDSDirectory:
             payload_kind=kind_name(int(raw_fmt)),
             content_hash=content_hash_bytes(raw),
             raw_size=len(raw), stored_size=len(stored), provenance=ptag,
+            config_id=cfg.config_id, config_generation=cfg.generation, key_id=cfg.key_id,
         )
         with self._lock:
             self._entries.put(name, entry)
             self._ts_mod = int(time.time_ns())
             self._bloom.add(name)
         self._registry.put(name, entry)
+        self.telemetry_manager.record_write(
+            time.perf_counter_ns() - _obs_start_ns,
+            raw_size=len(raw),
+            stored_size=len(stored),
+            backend=self._entry_index.backend_name,
+        )
         return entry
 
     def write_variable(self, name: str, value: Any, *, compress: bool | None = None, codec: str = '', provenance: ProvenanceTag | str | None = None) -> 'TDSEntry':
@@ -1014,6 +1043,7 @@ class TDSDirectory:
             'raw_size': len(raw), 'chunk_count': len(chunk_names),
         }
         self.write(name, manifest, fmt_id=FmtID.JSON_UTF8, compress=False)
+        self.telemetry_manager.record_chunk(len(chunk_names))
         return TDSResult.success('TEXT_CHUNKED_WRITTEN' if not exists else 'TEXT_CHUNKED_OVERWRITTEN', 'Chunked text entry stored.', name=name, path=self.path(), meta={'chunks': len(chunk_names), 'content_hash': manifest['content_hash'], 'raw_size': len(raw)})
 
     def read_text(self, name: str) -> str:
@@ -1059,6 +1089,9 @@ class TDSDirectory:
             'stored_size': int(entry.stored_size), 'codec': entry.codec,
             'compressed': bool(entry.fmt_id & FmtID.COMPRESSED),
             'provenance': getattr(entry, 'provenance', ProvenanceTag()).as_dict(),
+            'config_id': getattr(entry, 'config_id', ''),
+            'config_generation': int(getattr(entry, 'config_generation', 0)),
+            'key_id': getattr(entry, 'key_id', None),
         }
 
     def invariant_report(self) -> dict:
@@ -1075,25 +1108,35 @@ class TDSDirectory:
         route_id = int(self.srz.route_id) if self.srz.enabled else 0
         # JIT Bloom gate — definite miss with no lock acquired
         if name not in self._bloom:
+            elapsed = time.perf_counter_ns() - start_ns
             if self.telemetry.enabled:
-                self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=False, error_code=1, route_id=route_id)
+                self.telemetry.record_lookup(elapsed, hit=False, error_code=1, route_id=route_id)
+            self.telemetry_manager.record_read(elapsed, hit=False, backend=self._entry_index.backend_name)
+            self.telemetry_manager.record_error()
             raise KeyError(f"No entry '{name}' in {self.name!r}")
         # Check registry first (lock-free path for hot entries)
         cached = self._registry.get(name)
         if cached is not None:
+            elapsed = time.perf_counter_ns() - start_ns
             if self.telemetry.enabled:
-                self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=True, cold=False, route_id=route_id)
+                self.telemetry.record_lookup(elapsed, hit=True, cold=False, route_id=route_id)
+            self.telemetry_manager.record_read(elapsed, hit=True, backend=self._entry_index.backend_name)
             return cached.data
         # Fallback: lock and look up in EntryIndex
         with self._lock:
             entry = self._entries.get(name)
             if entry is None:
+                elapsed = time.perf_counter_ns() - start_ns
                 if self.telemetry.enabled:
-                    self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=False, error_code=2, route_id=route_id)
+                    self.telemetry.record_lookup(elapsed, hit=False, error_code=2, route_id=route_id)
+                self.telemetry_manager.record_read(elapsed, hit=False, backend=self._entry_index.backend_name)
+                self.telemetry_manager.record_error()
                 raise KeyError(f"No entry '{name}' in {self.name!r}")
         self._registry.put(name, entry)
+        elapsed = time.perf_counter_ns() - start_ns
         if self.telemetry.enabled:
-            self.telemetry.record_lookup(time.perf_counter_ns() - start_ns, hit=True, cold=True, route_id=route_id)
+            self.telemetry.record_lookup(elapsed, hit=True, cold=True, route_id=route_id)
+        self.telemetry_manager.record_read(elapsed, hit=True, backend=self._entry_index.backend_name)
         return entry.data
 
     def delete(self, name: str) -> None:
@@ -1101,6 +1144,7 @@ class TDSDirectory:
             self._entries.pop(name, None)
             self._ts_mod = int(time.time_ns())
         self._registry.remove(name)
+        self.telemetry_manager.record_delete()
 
     # --- async surface ---
 
@@ -1120,6 +1164,9 @@ class TDSDirectory:
         if self.is_reserved_namespace(name) and not allow_reserved:
             raise ValueError(f"Directory name {name!r} is reserved by manifest policy")
         kwargs.setdefault('manifest_policy', self.manifest_policy)
+        kwargs.setdefault('config_registry', self.config_registry)
+        kwargs.setdefault('crypto_provider', self.crypto_provider)
+        kwargs.setdefault('telemetry_manager', self.telemetry_manager)
         child = TDSDirectory(name=name, parent=self, **kwargs)
         with self._lock:
             self._children[name] = child
@@ -1216,6 +1263,15 @@ class TDSDirectory:
         snap = self.telemetry.snapshot()
         snap['path'] = self.path()
         snap['route_id'] = int(self.srz.route_id) if self.srz.enabled else 0
+        try:
+            istats = self._entry_index.stats()
+            snap['index'] = istats.__dict__.copy() if hasattr(istats, '__dict__') else dict(istats)
+        except Exception:
+            snap['index'] = {'backend': self._entry_index.backend_name}
+        try:
+            snap['radix'] = self._children.stats()
+        except Exception:
+            snap['radix'] = {'backend': getattr(self._children, 'backend_name', 'unknown')}
         return snap
 
     def capability_names(self) -> List[str]:
@@ -1273,17 +1329,120 @@ class TDSFileSystem:
         asyncio.run(db.awrite("key", value))
         value = asyncio.run(db.aread("key"))
     """
-    VERSION = (2, 0, 1)
+    VERSION = (2, 3, 0)
 
-    def __init__(self, name: str = "tds_root", manifest_policy: Optional[ManifestPolicy] = None):
+    def __init__(self, name: str = "tds_root", manifest_policy: Optional[ManifestPolicy] = None, runtime_config: Optional[RuntimeConfig] = None, config_registry: Optional[ConfigRegistry] = None, crypto_provider: Optional[CryptoProvider] = None, telemetry_manager: Optional[TelemetryManager] = None):
         self.manifest_policy = manifest_policy or ManifestPolicy.default()
+        self.config_registry = config_registry or ConfigRegistry(runtime_config or RuntimeConfig.default())
+        self.crypto_provider: CryptoProvider = crypto_provider or NoopCryptoProvider()
+        self.telemetry_manager: TelemetryManager = telemetry_manager or TelemetryManager()
         self.root = TDSDirectory(
             name   = name,
             fmt_id = FmtID.RAW_BINARY,
             flags  = DirFlags.PARALLEL_IO | DirFlags.PROB_SORT | DirFlags.RECURSIVE,
             manifest_policy = self.manifest_policy,
+            config_registry = self.config_registry,
+            crypto_provider = self.crypto_provider,
+            telemetry_manager = self.telemetry_manager,
         )
         self._pool = ConcurrencyPool.acquire()
+        self.telemetry_manager.register_sampler("swiss", self._swiss_stats_snapshot)
+        self.telemetry_manager.register_sampler("radix", self._radix_stats_snapshot)
+        self.telemetry_manager.register_sampler("storage", self._storage_stats_snapshot)
+        self.telemetry_manager.register_sampler("components", self._component_status_snapshot)
+
+
+    def _walk_directories(self):
+        stack = [self.root]
+        while stack:
+            node = stack.pop()
+            yield node
+            with node._lock:
+                stack.extend(list(node._children.values()))
+
+    def _swiss_stats_snapshot(self) -> dict:
+        total_entries = 0
+        backends: Dict[str, int] = {}
+        max_probe = 0
+        avg_probe_sum = 0.0
+        stat_count = 0
+        for node in self._walk_directories():
+            try:
+                stats = node._entry_index.stats()
+                data = stats.__dict__.copy() if hasattr(stats, '__dict__') else dict(stats)
+            except Exception:
+                data = {"backend": node._entry_index.backend_name, "size": len(node._entry_index)}
+            size = int(data.get("size", data.get("entries", len(node._entry_index))) or 0)
+            total_entries += size
+            backend = str(data.get("backend", node._entry_index.backend_name))
+            backends[backend] = backends.get(backend, 0) + 1
+            max_probe = max(max_probe, int(data.get("max_probe", 0) or 0))
+            if "average_probe" in data or "avg_probe" in data:
+                avg_probe_sum += float(data.get("average_probe", data.get("avg_probe", 0.0)) or 0.0)
+                stat_count += 1
+        return {
+            "entries": total_entries,
+            "directory_count": sum(backends.values()),
+            "backends": backends,
+            "max_probe": max_probe,
+            "average_probe": round(avg_probe_sum / stat_count, 3) if stat_count else 0.0,
+        }
+
+    def _radix_stats_snapshot(self) -> dict:
+        routers = 0
+        nodes = 0
+        edges = 0
+        max_depth = 0
+        avg_steps_sum = 0.0
+        for node in self._walk_directories():
+            routers += 1
+            try:
+                st = node._children.stats()
+            except Exception:
+                st = {}
+            nodes += int(st.get("nodes", 0) or 0)
+            edges += int(st.get("edges", 0) or 0)
+            max_depth = max(max_depth, int(st.get("max_depth", 0) or 0))
+            avg_steps_sum += float(st.get("average_lookup_steps", 0.0) or 0.0)
+        return {
+            "backend": "python-radix-router",
+            "routers": routers,
+            "nodes": nodes,
+            "edges": edges,
+            "max_depth": max_depth,
+            "average_lookup_steps": round(avg_steps_sum / max(1, routers), 3),
+        }
+
+    def _storage_stats_snapshot(self) -> dict:
+        directory_count = 0
+        entry_count = 0
+        child_count = 0
+        for node in self._walk_directories():
+            directory_count += 1
+            with node._lock:
+                entry_count += len(node._entries)
+                child_count += len(node._children)
+        return {
+            "directories": directory_count,
+            "entries": entry_count,
+            "children": child_count,
+            "active_config": self.config_registry.active().config_id,
+            "config_generation": self.config_registry.active().generation,
+        }
+
+    def _component_status_snapshot(self) -> dict:
+        cfg = self.config_registry.active()
+        return {
+            "tds_api": {"status": "healthy", "version": ".".join(map(str, self.VERSION))},
+            "runtime_config": {"status": "healthy", "config_id": cfg.config_id, "generation": cfg.generation},
+            "swiss_index": {"status": "healthy", "backend": self.root._entry_index.backend_name},
+            "radix_router": {"status": "healthy", "backend": self.root._children.backend_name},
+            "telemetry_manager": {"status": "healthy", "snapshot_interval_seconds": self.telemetry_manager.snapshot_interval_seconds},
+        }
+
+    def observation_snapshot(self, *, force: bool = False) -> Dict[str, object]:
+        """Return the cached v2.3 dashboard/observability snapshot."""
+        return self.telemetry_manager.snapshot(force=force)
 
     def resolve(self, path: str) -> TDSDirectory:
         parts = [p for p in path.strip('/').split('/') if p]

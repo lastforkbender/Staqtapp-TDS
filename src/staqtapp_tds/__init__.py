@@ -1,6 +1,6 @@
 """
 Staqtapp-TDS — Temporal Directory System
-VFS for ASI-scale computation. v2.1.0
+VFS for ASI-scale computation. v2.3.0
 
 New in v2.1.0: radix directory router and native Swiss-table-inspired EntryIndex backend with GIL-released reads.
 
@@ -84,7 +84,7 @@ from staqtapp_tds.manifest import (
     ManifestPolicy, MANIFEST_FILENAME, load_manifest, write_default_manifest,
 )
 from staqtapp_tds.srz import SRZMetadata, SRZ_DTYPE, route_id_for
-from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode, TELEMETRY_DTYPE
+from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode, TELEMETRY_DTYPE, TelemetryManager, TelemetrySnapshot
 from staqtapp_tds.latency import LatencyPolicy, LatencyBucket, classify_latency, latency_ratio
 from staqtapp_tds.capabilities import CapabilityRegistry, ZoneCapability
 from staqtapp_tds.namespaces import ReservedNamespaces
@@ -96,8 +96,11 @@ from staqtapp_tds.invariants import InvariantEngine, InvariantReport, InvariantV
 from staqtapp_tds.provenance import ProvenanceTag, ProvenanceClass, PROVENANCE_DTYPE
 from staqtapp_tds.cluster import TDSClusterIdentity, CLUSTER_DTYPE, query_requires_selector
 from staqtapp_tds.radix import RadixDirectoryRouter
+from staqtapp_tds.config import RuntimeConfig, AdminConfig, ConfigRegistry
+from staqtapp_tds.secure import SecureParams
+from staqtapp_tds.crypto import CryptoProvider, NoopCryptoProvider, XorCryptoProvider
 
-__version__ = "2.1.0"
+__version__ = "2.3.0"
 __all__ = [
     # filesystem
     "TDSFileSystem", "TDSDirectory", "TDSEntry",
@@ -114,7 +117,7 @@ __all__ = [
     # v1.7 semantic infrastructure
     "ManifestPolicy", "MANIFEST_FILENAME", "load_manifest", "write_default_manifest",
     "SRZMetadata", "SRZ_DTYPE", "route_id_for",
-    "DirectoryTelemetry", "TelemetryMode", "TELEMETRY_DTYPE",
+    "DirectoryTelemetry", "TelemetryMode", "TELEMETRY_DTYPE", "TelemetryManager", "TelemetrySnapshot",
     "LatencyPolicy", "LatencyBucket", "classify_latency", "latency_ratio",
     "CapabilityRegistry", "ZoneCapability", "ReservedNamespaces",
     "TDSResult", "VariableControl", "StalkState", "ErrorTelemetry", "ErrorLogMode",
@@ -122,4 +125,5 @@ __all__ = [
     "InvariantEngine", "InvariantReport", "InvariantViolation", "InvariantCode", "INVARIANT_DTYPE",
     "ProvenanceTag", "ProvenanceClass", "PROVENANCE_DTYPE",
     "TDSClusterIdentity", "CLUSTER_DTYPE", "query_requires_selector", "RadixDirectoryRouter",
+    "RuntimeConfig", "AdminConfig", "ConfigRegistry", "SecureParams", "CryptoProvider", "NoopCryptoProvider", "XorCryptoProvider",
 ]
