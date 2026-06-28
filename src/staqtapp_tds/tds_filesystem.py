@@ -1,6 +1,6 @@
 """
 ////////////////////////////////////////////////////////////////////////////////
->>> Staqtapp-TDS v1.7.1 / tds_filesystem.py
+>>> Staqtapp-TDS v1.7.3 / tds_filesystem.py
 ////////////////////////////////////////////////////////////////////////////////
 
 Staqtapp-TDS / Temporal Directory System
@@ -67,6 +67,11 @@ from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode
 from staqtapp_tds.srz import SRZMetadata
 from staqtapp_tds.manifest import ManifestPolicy
 from staqtapp_tds.namespaces import ReservedNamespaces
+from staqtapp_tds.result import TDSResult
+from staqtapp_tds.errors import ErrorLogMode
+from staqtapp_tds.variables import VariableControl
+from staqtapp_tds.serializers import CompressionPolicy, PayloadKind, choose_variable_kind, content_hash_bytes, json_dumps_fast, json_loads_fast, kind_name
+from staqtapp_tds.invariants import InvariantEngine
 
 try:
     from numba import njit, prange
@@ -91,6 +96,8 @@ class FmtID(IntFlag):
     RAW_BINARY   = 0x00
     NUMPY_MATRIX = 0x01
     PICKLE_OBJ   = 0x02
+    TEXT_UTF8    = 0x03
+    JSON_UTF8    = 0x05
     SYMBOL_TABLE = 0x04
     LOOP_CACHE   = 0x08
     COMPRESSED   = 0x80
@@ -713,6 +720,12 @@ def _serialize_payload(data: Any, fmt_id: FmtID, codec: str = '') -> bytes:
         buf = io.BytesIO()
         np.save(buf, data, allow_pickle=False)
         raw = buf.getvalue()
+    elif base == FmtID.TEXT_UTF8:
+        if not isinstance(data, str):
+            raise TypeError(f"TEXT_UTF8 entries require str, got {type(data).__name__}")
+        raw = data.encode('utf-8')
+    elif base == FmtID.JSON_UTF8:
+        raw, _backend = json_dumps_fast(data)
     else:
         raw = pickle.dumps(data, protocol=5)
     if fmt_id & FmtID.COMPRESSED:
@@ -727,6 +740,11 @@ def _deserialize_payload(raw: bytes, fmt_id: FmtID, codec: str = '') -> Any:
     if base == FmtID.NUMPY_MATRIX:
         import io
         return np.load(io.BytesIO(raw), allow_pickle=False)
+    if base == FmtID.TEXT_UTF8:
+        return raw.decode('utf-8')
+    if base == FmtID.JSON_UTF8:
+        value, _backend = json_loads_fast(raw)
+        return value
     try:
         return pickle.loads(raw)
     except Exception:
@@ -741,6 +759,10 @@ class TDSEntry:
     ts_written: int = field(default_factory=lambda: int(time.time_ns()))
     entry_id:   str = field(default_factory=lambda: uuid.uuid4().hex[:12])
     codec:      str = field(default='')
+    payload_kind: str = field(default='')
+    content_hash: str = field(default='')
+    raw_size: int = 0
+    stored_size: int = 0
 
     def serialise(self) -> bytes:
         raw = _serialize_payload(self.data, self.fmt_id, self.codec)
@@ -792,6 +814,9 @@ class TDSDirectory:
         self._bloom     = BloomFilter(capacity=8192)
         self.loop_cache = LoopCacheManager()
         self.symbols    = SymbolTable()
+        self.compression_policy = CompressionPolicy(enabled=False, codec='', threshold_bytes=4096)
+        self.variables  = VariableControl(self)
+        self.invariants = InvariantEngine()
 
         # v1.7 semantic infrastructure: read-once policy, optional SRZ, and
         # lightweight telemetry. These are separate module objects; filesystem.py
@@ -860,18 +885,144 @@ class TDSDirectory:
 
     def write(self, name: str, value: Any,
               fmt_id: FmtID = FmtID.PICKLE_OBJ,
-              compress: bool = False,
+              compress: bool | None = False,
               codec: str = '') -> 'TDSEntry':
         self._validate(name, value)
-        if compress:
-            fmt_id = FmtID(fmt_id | FmtID.COMPRESSED)
-        entry = TDSEntry(name=name, fmt_id=fmt_id, data=value, codec=codec)
+        raw_fmt = FmtID(fmt_id & ~FmtID.COMPRESSED)
+        raw = _serialize_payload(value, raw_fmt, codec)
+        do_compress = self.compression_policy.should_compress(len(raw), force=compress)
+        final_fmt = FmtID(raw_fmt | FmtID.COMPRESSED) if do_compress else raw_fmt
+        stored = CompressorRegistry.compress(raw, codec) if do_compress else raw
+        entry = TDSEntry(
+            name=name, fmt_id=final_fmt, data=value, codec=codec,
+            payload_kind=kind_name(int(raw_fmt)),
+            content_hash=content_hash_bytes(raw),
+            raw_size=len(raw), stored_size=len(stored),
+        )
         with self._lock:
             self._entries.put(name, entry)
             self._ts_mod = int(time.time_ns())
             self._bloom.add(name)
         self._registry.put(name, entry)
         return entry
+
+    def write_variable(self, name: str, value: Any, *, compress: bool | None = None, codec: str = '') -> 'TDSEntry':
+        kind = choose_variable_kind(value)
+        return self.write(name, value, fmt_id=FmtID(int(kind)), compress=compress, codec=codec)
+
+    def write_json(self, name: str, value: Any, *, overwrite: bool = False, compress: bool | None = None, codec: str = '') -> TDSResult:
+        with self._lock:
+            exists = name in self._entries
+        if exists and not overwrite:
+            self.variables.errors.record('JSON_EXISTS', path=self.path(), name=name)
+            return TDSResult.fail('JSON_EXISTS', 'JSON entry already exists; use overwrite=True to replace.', name=name, path=self.path())
+        self.write(name, value, fmt_id=FmtID.JSON_UTF8, compress=compress, codec=codec)
+        return TDSResult.success('JSON_WRITTEN' if not exists else 'JSON_OVERWRITTEN', 'JSON entry stored.', name=name, path=self.path(), value=value)
+
+    def write_text(self, name: str, text: str, *, overwrite: bool = False,
+                   compress: bool | None = None, codec: str = '') -> TDSResult:
+        """Store a whole text file as first-class UTF-8 text.
+
+        Duplicate text names return structured feedback unless overwrite=True.
+        This keeps text storage separate from Python-variable semantics while
+        using the same directory namespace.
+        """
+        if not isinstance(text, str):
+            return TDSResult.fail('TEXT_TYPE_ERROR', 'Text entries require str data.', name=name, path=self.path())
+        with self._lock:
+            exists = name in self._entries
+        if exists and not overwrite:
+            self.variables.errors.record('TEXT_EXISTS', path=self.path(), name=name)
+            return TDSResult.fail('TEXT_EXISTS', 'Text entry already exists; use overwrite=True to replace.', name=name, path=self.path())
+        entry = self.write(name, text, fmt_id=FmtID.TEXT_UTF8, compress=compress, codec=codec)
+        return TDSResult.success('TEXT_WRITTEN' if not exists else 'TEXT_OVERWRITTEN', 'Text entry stored.', name=name, path=self.path(), value=text, meta={'compressed': bool(entry.fmt_id & FmtID.COMPRESSED), 'codec': codec or CompressorRegistry._default, 'content_hash': entry.content_hash, 'raw_size': entry.raw_size, 'stored_size': entry.stored_size})
+
+    def _text_chunk_prefix(self, name: str) -> str:
+        h = zlib.adler32(name.encode('utf-8')) & 0xFFFFFFFF
+        return f".__tds_chunk__{h:08x}_"
+
+    def write_text_chunked(self, name: str, text: str, *, chunk_size: int = 65536,
+                           overwrite: bool = False, compress: bool | None = None, codec: str = '') -> TDSResult:
+        if not isinstance(text, str):
+            return TDSResult.fail('TEXT_TYPE_ERROR', 'Chunked text entries require str data.', name=name, path=self.path())
+        if int(chunk_size) <= 0:
+            return TDSResult.fail('TEXT_CHUNK_SIZE_INVALID', 'chunk_size must be positive.', name=name, path=self.path())
+        with self._lock:
+            exists = name in self._entries
+        if exists and not overwrite:
+            self.variables.errors.record('TEXT_EXISTS', path=self.path(), name=name)
+            return TDSResult.fail('TEXT_EXISTS', 'Text entry already exists; use overwrite=True to replace.', name=name, path=self.path())
+        if exists and overwrite:
+            try:
+                prior = self.read(name)
+                if isinstance(prior, dict) and prior.get('kind') == 'TEXT_CHUNKED_UTF8':
+                    for chunk_name in prior.get('chunks', []) or []:
+                        if chunk_name in self._entries:
+                            self.delete(chunk_name)
+            except Exception:
+                pass
+        raw = text.encode('utf-8')
+        prefix = self._text_chunk_prefix(name)
+        chunks = [text[i:i + int(chunk_size)] for i in range(0, len(text), int(chunk_size))] or ['']
+        chunk_names = []
+        for i, chunk in enumerate(chunks):
+            cname = f"{prefix}{i:06d}"
+            self.write(cname, chunk, fmt_id=FmtID.TEXT_UTF8, compress=compress, codec=codec)
+            chunk_names.append(cname)
+        manifest = {
+            'kind': 'TEXT_CHUNKED_UTF8', 'name': name, 'chunk_size': int(chunk_size),
+            'chunks': chunk_names, 'content_hash': content_hash_bytes(raw),
+            'raw_size': len(raw), 'chunk_count': len(chunk_names),
+        }
+        self.write(name, manifest, fmt_id=FmtID.JSON_UTF8, compress=False)
+        return TDSResult.success('TEXT_CHUNKED_WRITTEN' if not exists else 'TEXT_CHUNKED_OVERWRITTEN', 'Chunked text entry stored.', name=name, path=self.path(), meta={'chunks': len(chunk_names), 'content_hash': manifest['content_hash'], 'raw_size': len(raw)})
+
+    def read_text(self, name: str) -> str:
+        value = self.read(name)
+        if isinstance(value, dict) and value.get('kind') == 'TEXT_CHUNKED_UTF8':
+            parts = [self.read(chunk_name) for chunk_name in value.get('chunks', [])]
+            return ''.join(parts)
+        if not isinstance(value, str):
+            raise TypeError(f"Entry {name!r} is not a UTF-8 text entry")
+        return value
+
+    def addvar(self, name: str, data: Any) -> TDSResult:
+        return self.variables.addvar(name, data)
+
+    def editvar(self, name: str, data: Any, *, overwrite: bool = True) -> TDSResult:
+        return self.variables.editvar(name, data, overwrite=overwrite)
+
+    def lockvar(self, name: str, locked: bool = True) -> TDSResult:
+        return self.variables.lockvar(name, locked)
+
+    def unlockvar(self, name: str) -> TDSResult:
+        return self.variables.unlockvar(name)
+
+    def stalkvar(self, name: str, data: Any = None) -> TDSResult:
+        return self.variables.stalkvar(name, data)
+
+    def findvar(self, name: str) -> TDSResult:
+        return self.variables.findvar(name)
+
+    def loadvar(self, name: str) -> Any:
+        return self.variables.loadvar(name)
+
+    def variable_control_snapshot(self) -> dict:
+        return self.variables.snapshot()
+
+    def entry_metadata(self, name: str) -> dict:
+        entry = self._entries.get(name)
+        if entry is None:
+            raise KeyError(name)
+        return {
+            'name': entry.name, 'fmt_id': int(entry.fmt_id), 'payload_kind': entry.payload_kind,
+            'content_hash': entry.content_hash, 'raw_size': int(entry.raw_size),
+            'stored_size': int(entry.stored_size), 'codec': entry.codec,
+            'compressed': bool(entry.fmt_id & FmtID.COMPRESSED),
+        }
+
+    def invariant_report(self) -> dict:
+        return self.invariants.evaluate_directory(self).as_dict()
 
     def read(self, name: str) -> Any:
         start_ns = self.telemetry.start()
@@ -1076,7 +1227,7 @@ class TDSFileSystem:
         asyncio.run(db.awrite("key", value))
         value = asyncio.run(db.aread("key"))
     """
-    VERSION = (1, 7, 1)
+    VERSION = (1, 7, 3)
 
     def __init__(self, name: str = "tds_root", manifest_policy: Optional[ManifestPolicy] = None):
         self.manifest_policy = manifest_policy or ManifestPolicy.default()
