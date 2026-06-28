@@ -1,233 +1,144 @@
-# 🟦🟪🟧 Staqtapp-TDS v2.1.0
+<p align="center">
+    <img src="docs/dashboard-v2.3.0.jpeg" alt="Staqtapp-TDS v2.3.0 Dashboard" width="100%"/>
+</p>
 
-**Temporal Directory System** — a Python-first virtual storage layer for named Python variables, UTF-8 text payloads, semantic routing metadata, provenance tags, and high-throughput lookup paths.
 
-> v2.1.0 is the extended speed-target release: **optional native Swiss-table-inspired EntryIndex**, **GIL-released native reads**, and a **radix directory router**. The public Python API remains intact.
+# 🟦🟪🟧 Staqtapp-TDS v2.3.0
 
----
+**Temporal Directory System** — a Python-first virtual storage layer for named Python variables, UTF-8 text payloads, semantic routing metadata, provenance tags, config generations, and observable high-throughput lookup paths.
 
-## Upfront performance statement
-
-Staqtapp-TDS v2.1.0 avoids the GIL only in the specific native lookup primitive:
-
-```text
-EntryIndex.get_handle(key)
-EntryIndex.contains(key)
-```
-
-When the optional native extension is built, these methods execute the native table lookup inside `Py_BEGIN_ALLOW_THREADS` / `Py_END_ALLOW_THREADS`. This means concurrent read-heavy lookup workloads can proceed without holding the Python GIL during the native key-to-handle search.
-
-The GIL is **not** avoided for:
+v2.3.0 turns the admin dashboard into a real **observation layer** without making it part of the hard TDS data path.
 
 ```text
-pickle serialization/deserialization
-JSON parsing
-text decoding
-compression/decompression
-stalkvar merge/copy behavior
-Python object return from handles
-persistence flush/load orchestration
-manifest parsing
-Python directory object traversal
+TDS Core
+  Swiss index / radix / chunking / serialization / persistence
+        ↓ publishes cheap counters + sampled subsystem stats
+TelemetryManager
+        ↓ cached snapshots
+Local Browser Panel
 ```
 
-So the speed increase is strongest where TDS is repeatedly resolving names, route IDs, filenames, and variable keys into stable `int64` handles.
+The dashboard observes. It does not repeatedly scan or control hot internals.
 
----
+## What is new in v2.3.0
 
-## What changed in v2.1.0
+### TelemetryManager
 
-### 1. Native Swiss-table-inspired EntryIndex
-
-The optional C backend now uses:
+`TelemetryManager` records lightweight counters and timers for normal TDS work:
 
 ```text
-bytes key -> int64 handle
+reads / writes / lookups
+lookup hits / misses
+average read/write/lookup latency
+raw bytes / stored bytes
+compression ratio
+chunks created
+deletes / errors
+native vs Python backend operation counts
 ```
 
-with:
+Snapshot generation is cached and throttled. The default dashboard interval remains 2 seconds.
 
-- open addressing,
-- Swiss-table-style hash fingerprints/control bytes,
-- triangular probing,
-- tombstones,
-- resize on load pressure,
-- native read/write lock,
-- GIL-released `get_handle()` and `contains()`.
+### Adaptive behavior feedback
 
-This backend is conservative by design. It is **read-concurrent**, not fully lock-free. Writes and resizes are protected by the native lock.
-
-### 2. Radix directory router
-
-Directory children no longer depend directly on a raw dictionary as the only structural routing layer. v2.1.0 adds a compressed-prefix radix router for directory child names and path routing.
-
-This helps prepare TDS for:
+The observation snapshot classifies storage behavior objectively:
 
 ```text
-deep paths
-prefix-heavy semantic zones
-cluster layouts
-future native radix acceleration
+idle
+read-heavy
+write-heavy
+balanced
 ```
 
-The radix router is Python-side in v2.1.0. It is a safe structural step before considering a native radix backend.
-
-### 3. EntryIndex seam remains clean
-
-The native backend still does **not** know about:
+It also exposes conservative recommendations, such as:
 
 ```text
-variables
-stalkvar
-lockvar
-SRZ
-manifest policy
-telemetry
-provenance
-Python objects
+low compression gain
+Swiss probe pressure
+miss-heavy lookups
 ```
 
-It only maps keys to handles. This preserves the architecture:
+These are recommendations only. TDS does not auto-tune itself yet.
+
+### Dashboard upgrades
+
+The local browser panel now displays:
 
 ```text
-Python semantics
-    ↓
-EntryIndex facade
-    ↓
-Python backend or native Swiss backend
-    ↓
-int64 handle
+Reads/sec
+Writes/sec
+Average lookup latency
+Average write latency
+Compression ratio
+Chunk count
+Index pressure
+Workload mode
+Live Architecture component states
 ```
 
----
+The panel is still local-only by default and remains a control/observer shell.
 
-## Current storage lanes
+## Security/control-plane posture
+
+Current admin/dashboard security remains development-local and intentionally minimal:
 
 ```text
-Python variables      -> serializer-selected payload kind, pickle fallback
-UTF-8 text files      -> TEXT_UTF8, optional chunking
-JSON payloads         -> JSON_UTF8, optional orjson/simdjson when available
-NumPy arrays          -> ndarray path
-Stalk variables       -> controlled variable chains
-Lock variables        -> internal access control table
-Provenance metadata   -> compact numeric records
-Cluster identity      -> lightweight feedback layer
+localhost-bound panel
+short-lived local config grants
+immutable RuntimeConfig stage/promote/rollback
+audit events for admin actions
+no raw secrets shown
+no benchmark/deep diagnostic execution from automatic refresh
 ```
 
----
+Stronger mechanisms such as mTLS, signed config bundles, quorum approval, or air-gapped import/export remain future production-hardening layers.
 
-## Native backend usage
+## Performance boundary
 
-Default behavior:
-
-```python
-from staqtapp_tds import EntryIndex
-
-idx = EntryIndex(backend="auto")
-```
-
-`auto` attempts native loading and falls back to Python.
-
-Force native:
-
-```python
-idx = EntryIndex(backend="native")
-```
-
-Force Python:
-
-```python
-idx = EntryIndex(backend="python")
-```
-
-Inspect backend:
-
-```python
-print(idx.backend_name)
-print(idx.stats())
-```
-
-Native stats include:
+The browser panel should not materially interfere with the storage engine.
 
 ```text
-backend = native-c-swiss-entryindex
-gil_released_get_handle = True
-swiss_control_bytes = True
-probing = triangular
+Hot path:
+  counter/timer increments only
+
+Snapshot path:
+  cached, throttled, sampler-based
+
+Manual diagnostics:
+  explicit admin action only
 ```
 
----
+The rule for future work is:
 
-## Radix path routing
+> Dashboard features may consume telemetry, but may not require direct access to Swiss-table, radix, persistence, or serialization internals beyond published metrics.
+
+## Quick use
 
 ```python
 from staqtapp_tds import TDSFileSystem
 
 fs = TDSFileSystem()
-node = fs.makedirs("/models/language/tokenizers")
-node.write_text("notes.md", "radix path works")
+fs.root.write("greeting", "hello")
+fs.root.read("greeting")
 
-same = fs.resolve_radix("/models/language/tokenizers")
-print(same.read_text("notes.md"))
+snapshot = fs.observation_snapshot(force=True)
+print(snapshot["performance"])
+print(snapshot["behavior"])
 ```
 
-Standard `resolve()` still works. `resolve_radix()` exposes the radix path seam directly.
+Admin panel:
 
----
+```bash
+staqtapp-tds-admin panel
+```
 
-## Design boundary
+Then open the local URL printed by the command.
 
-TDS remains an infrastructure layer:
+## Validation
+
+This package was checked with:
 
 ```text
-TDS provides:
-  structure
-  identity
-  lookup speed
-  deterministic variable controls
-  telemetry
-  provenance tagging
-  invariant feedback
-
-TDS does not provide:
-  reasoning
-  semantic interpretation
-  AI planning
+47 passed, 2 skipped
+python compile check passed
 ```
-
-This boundary matters because native code should accelerate mechanics, not absorb the higher-level Python design.
-
----
-
-## Testing status
-
-v2.1.0 validation included:
-
-```text
-34 pytest tests passed
-native extension build smoke test passed
-Swiss backend stats verified
-GIL-release flags verified
-radix prefix/delete/path tests passed
-concurrent native read test passed
-variable/text semantics regression tests passed
-```
-
----
-
-## Remaining bottlenecks
-
-After v2.1.0, the next bottlenecks are not the same as the EntryIndex bottleneck:
-
-```text
-payload serialization
-pickle-heavy Python objects
-compression/decompression
-large text scanning
-chunk index search
-persistence batching
-arena lifecycle
-cluster-scale indexes
-```
-
-The next major design target should be index-first large text/cluster querying, not further expanding the native backend prematurely.

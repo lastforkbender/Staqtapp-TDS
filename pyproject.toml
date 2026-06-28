@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staqtapp-tds"
-version = "2.1.0"
+version = "2.3.0"
 description = "Staqtapp-TDS Temporal Directory System VFS"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -21,3 +21,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+
+[project.scripts]
+staqtapp-tds-admin = "staqtapp_tds.admin.console:main"
