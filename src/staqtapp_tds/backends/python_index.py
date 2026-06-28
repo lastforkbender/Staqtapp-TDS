@@ -1,5 +1,5 @@
 """
-Pure-Python EntryIndex backend for Staqtapp-TDS v1.6.0.
+Pure-Python EntryIndex backend for Staqtapp-TDS v1.7.0.
 
 This backend is correctness-first and portable. It does not remove the GIL, but
 it preserves the exact handle-based API expected from a future native backend.
@@ -18,6 +18,11 @@ class EntryIndexStats:
     size: int
     shards: int
     next_handle: int
+    capacity: int = -1
+    tombstones: int = 0
+    load_factor: float = 0.0
+    max_probe: int = 0
+    avg_probe: float = 0.0
 
 
 class PythonEntryIndexBackend:
@@ -65,6 +70,9 @@ class PythonEntryIndexBackend:
         with self._locks[sid]:
             handle = self._maps[sid].get(key)
             return int(handle) if handle is not None else -1
+
+    def get_handles(self, keys: List[str]) -> List[int]:
+        return [self.get_handle(k) for k in keys]
 
     def get_by_handle(self, handle: int) -> Optional[Any]:
         with self._meta_lock:
