@@ -1,8 +1,8 @@
 """
 Staqtapp-TDS — Temporal Directory System
-VFS for ASI-scale computation. v1.7.1
+VFS for ASI-scale computation. v1.7.3
 
-New in v1.7.1: src-layout repo, EntryIndex facade, backend package, native-extension seam, and arena module split.
+New in v1.7.3: src-layout repo, EntryIndex facade, backend package, native-extension seam, and arena module split.
 
 Performance uplift over v1.2.0 (all v1.2.0 bug fixes retained)
 ──────────────────────────────────────────────────────────────────
@@ -88,8 +88,13 @@ from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode, TELEMETRY_
 from staqtapp_tds.latency import LatencyPolicy, LatencyBucket, classify_latency, latency_ratio
 from staqtapp_tds.capabilities import CapabilityRegistry, ZoneCapability
 from staqtapp_tds.namespaces import ReservedNamespaces
+from staqtapp_tds.result import TDSResult
+from staqtapp_tds.variables import VariableControl, StalkState
+from staqtapp_tds.errors import ErrorTelemetry, ErrorLogMode
+from staqtapp_tds.serializers import PayloadKind, CompressionPolicy, SerializerDecision, choose_variable_kind, content_hash_bytes
+from staqtapp_tds.invariants import InvariantEngine, InvariantReport, InvariantViolation, InvariantCode, INVARIANT_DTYPE
 
-__version__ = "1.7.1"
+__version__ = "1.7.3"
 __all__ = [
     # filesystem
     "TDSFileSystem", "TDSDirectory", "TDSEntry",
@@ -109,4 +114,7 @@ __all__ = [
     "DirectoryTelemetry", "TelemetryMode", "TELEMETRY_DTYPE",
     "LatencyPolicy", "LatencyBucket", "classify_latency", "latency_ratio",
     "CapabilityRegistry", "ZoneCapability", "ReservedNamespaces",
+    "TDSResult", "VariableControl", "StalkState", "ErrorTelemetry", "ErrorLogMode",
+    "PayloadKind", "CompressionPolicy", "SerializerDecision", "choose_variable_kind", "content_hash_bytes",
+    "InvariantEngine", "InvariantReport", "InvariantViolation", "InvariantCode", "INVARIANT_DTYPE",
 ]
