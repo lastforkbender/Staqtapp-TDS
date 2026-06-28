@@ -1,6 +1,6 @@
 # 12 — Roadmap
 
-## v1.7.1
+## v1.7.3
 
 Documentation and reserved namespace support.
 

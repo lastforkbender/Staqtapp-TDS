@@ -1,6 +1,6 @@
 # 07 — Concurrency
 
-v1.7.1 remains Python-first. The GIL is reduced structurally in some areas but not eliminated.
+v1.7.3 remains Python-first. The GIL is reduced structurally in some areas but not eliminated.
 
 Current concurrency strategy:
 

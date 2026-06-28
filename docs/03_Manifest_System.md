@@ -16,7 +16,7 @@ The `.tds_manifest` is the folder-level authority. It defines policy once, then 
 {
   "tds_manifest_version": 1,
   "folder_signature": "STAQTTDS-SRZ-v1",
-  "schema_version": "1.7.1",
+  "schema_version": "1.7.3",
   "route_stamp_version": "RSPEC-1",
   "hash_policy": "sha256",
   "codec_policy": "raw-or-zlib",
