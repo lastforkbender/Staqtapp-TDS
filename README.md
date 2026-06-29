@@ -3,148 +3,176 @@
 </p>
 
 
-Professional observability dashboard release. Adds the polished dark blue/purple/orange admin interface, expanded SVG icon set, Live Architecture panel, Timeline view, and snapshot-only JavaScript rendering while preserving the TDS hot-path boundary.
+# 🟦🟪🟧 Staqtapp-TDS v2.3.7
 
-# 🟦🟪🟧 Staqtapp-TDS v2.3.5
+Staqtapp-TDS is a content-neutral Temporal Directory System: a directory-first virtual storage engine with radix routing, Swiss-table-style indexing, chunking, persistence, admin control, and an observation dashboard.
 
-**Temporal Directory System** — a Python-first virtual storage layer for named Python variables, UTF-8 text payloads, semantic routing metadata, provenance tags, config generations, and observable high-throughput lookup paths.
+The core principle remains unchanged:
 
-v2.3.1 turns the admin dashboard into a real **observation layer** without making it part of the hard TDS data path.
+> TDS stores, retrieves, indexes, observes, and records provenance. It does not reason, rank, reward, train, or aggregate on behalf of an AI system.
 
-```text
-TDS Core
-  Swiss index / radix / chunking / serialization / persistence
-        ↓ publishes cheap counters + sampled subsystem stats
-TelemetryManager
-        ↓ cached snapshots
-Local Browser Panel
-```
+## Highlights
 
-The dashboard observes. It does not repeatedly scan or control hot internals.
+- Directory-first VFS API with semantic routing zones and reserved namespace policy.
+- Swiss-table-inspired `EntryIndex` with native backend support where available.
+- Radix directory router for deeper namespace routing.
+- UTF-8 byte-safe text chunking.
+- Serializer and compression policy metadata per entry.
+- RuntimeConfig generations with stage/promote/rollback control flow.
+- Local-only browser admin panel and professional observability dashboard.
+- Telemetry snapshots for performance, storage, index health, behavior, recommendations, and timeline-style feedback.
+- Optional Spiral-compatible trace/provenance module for trace-shaped workflows.
 
-## What is new in v2.3.1
+## What is new in v2.3.7
 
-### TelemetryManager
+### Optional Spiral-compatible trace support
 
-`TelemetryManager` records lightweight counters and timers for normal TDS work:
+v2.3.7 adds `staqtapp_tds.spiral`, an optional workflow module for storing SPIRAL shaped data without changing TDS into a reasoning system.
 
-```text
-reads / writes / lookups
-lookup hits / misses
-average read/write/lookup latency
-raw bytes / stored bytes
-compression ratio
-chunks created
-deletes / errors
-native vs Python backend operation counts
-```
+It supports Sequential-Parallel-Aggregative-Reinforcement-Learning (SPIRAL) for proper ASI direction by Jubayer Ibn Hamid, Ifdita Hasan Orney, Michael Y. Li, Omar Shaikh, Yoonho Lee, Dorsa Sadigh, Chelsea Finn and Noah Goodman / Stanford University:
 
-Snapshot generation is cached and throttled. The default dashboard interval remains 2 seconds.
+- Spiral-like run directories
+- *search trace records
+- *trace-set manifests
+- aggregation provenance records
+- externally supplied rank metadata
+- final-output provenance
+- snapshot telemetry counters for trace-pipeline activity
 
-### Adaptive behavior feedback
+It does **not** perform:
 
-The observation snapshot classifies storage behavior objectively:
+- *trace ranking decisions
+- *reward assignment
+- aggregation
+- model training
+- reasoning
 
-```text
-idle
-read-heavy
-write-heavy
-balanced
-```
-
-It also exposes conservative recommendations, such as:
+A typical layout is:
 
 ```text
-low compression gain
-Swiss probe pressure
-miss-heavy lookups
+/spiral_runs/
+  run_000041/
+    problem.json
+    search_traces/
+      trace_0001.tds
+      trace_0002.tds
+    trace_sets/
+      set_0001.json
+    aggregations/
+      agg_0001.tds
+    final/
+      answer.tds
+    metadata/
+      trace_trace_0001.json
+      aggregation_agg_0001.json
 ```
 
-These are recommendations only. TDS does not auto-tune itself yet.
-
-### Dashboard upgrades
-
-The local browser panel now displays:
-
-```text
-Reads/sec
-Writes/sec
-Average lookup latency
-Average write latency
-Compression ratio
-Chunk count
-Index pressure
-Workload mode
-Live Architecture component states
-```
-
-The panel is still local-only by default and remains a control/observer shell.
-
-## Security/control-plane posture
-
-Current admin/dashboard security remains development-local and intentionally minimal:
-
-```text
-localhost-bound panel
-short-lived local config grants
-immutable RuntimeConfig stage/promote/rollback
-audit events for admin actions
-no raw secrets shown
-no benchmark/deep diagnostic execution from automatic refresh
-```
-
-Stronger mechanisms such as mTLS, signed config bundles, quorum approval, or air-gapped import/export remain future production-hardening layers.
-
-## Performance boundary
-
-The browser panel should not materially interfere with the storage engine.
-
-```text
-Hot path:
-  counter/timer increments only
-
-Snapshot path:
-  cached, throttled, sampler-based
-
-Manual diagnostics:
-  explicit admin action only
-```
-
-The rule for future work is:
-
-> Dashboard features may consume telemetry, but may not require direct access to Swiss-table, radix, persistence, or serialization internals beyond published metrics.
-
-## Quick use
+Example:
 
 ```python
-from staqtapp_tds import TDSFileSystem
+from staqtapp_tds import TDSFileSystem, create_spiral_run
 
-fs = TDSFileSystem()
-fs.root.write("greeting", "hello")
-fs.root.read("greeting")
+fs = TDSFileSystem("root")
+run = create_spiral_run(
+    fs.root,
+    "run_000041",
+    problem={"prompt": "example task"},
+    problem_id="p_812",
+)
 
-snapshot = fs.observation_snapshot(force=True)
-print(snapshot["performance"])
-print(snapshot["behavior"])
+run.store_search_trace(
+    "trace_0001",
+    "candidate reasoning trace stored as ordinary TDS data",
+    rank_score=0.87,
+    rank_source="external_verifier_A",
+)
+
+run.create_trace_set("set_0001", ["trace_0001"])
+
+run.store_aggregation(
+    "agg_0001",
+    "aggregated output supplied by the caller",
+    derived_from=["trace_0001"],
+    rank_score=0.91,
+    rank_source="external_verifier_A",
+)
+
+run.store_final("answer.tds", "final answer", derived_from=["agg_0001"])
 ```
 
-Admin panel:
+### Version cleanup
+
+v2.3.7 centralizes package versioning around `pyproject.toml` and `staqtapp_tds.__version__`. Historical release comments in runtime source files were reduced or removed so the source tree no longer reads like a stack of older version banners.
+
+### Telemetry and semantic storage positioning
+
+The README now reflects the current TDS identity:
+
+```text
+Storage Layer
+  directory / radix / index / chunking / persistence
+
+Observation Layer
+  telemetry manager / snapshots / dashboard / recommendations
+
+Optional Workflow Layers
+  Spiral-compatible trace/provenance support
+```
+
+The observation layer remains snapshot-driven. The dashboard reads cached telemetry and does not crawl the storage engine on every refresh.
+
+## Professional dashboard
+
+The admin panel is packaged under:
+
+```text
+src/staqtapp_tds/admin/
+  panel.py
+  templates/dashboard.html
+  static/css/dashboard.css
+  static/js/dashboard.js
+  static/icons/*.svg
+```
+
+Run locally:
 
 ```bash
 staqtapp-tds-admin panel
 ```
 
-Then open the local URL printed by the command.
+or from Python:
 
-## Validation
-
-This package was checked with:
-
-```text
-47 passed, 2 skipped
-python compile check passed
+```python
+from staqtapp_tds.admin.panel import AdminPanelServer
+AdminPanelServer().serve_forever()
 ```
 
-### v2.3.1 Admin Dashboard
+The panel remains local-only by default.
 
-The localhost admin panel is now a packaged dashboard subsystem under `src/staqtapp_tds/admin/` with reusable template, CSS, JavaScript, and SVG icon assets. The browser polls `/status.json` every two seconds and renders cached telemetry snapshots only; deep scans and benchmarks remain explicit admin actions.
+## RuntimeConfig boundary
+
+TDS supports immutable runtime configuration generations:
+
+```python
+from staqtapp_tds import RuntimeConfig, ConfigRegistry
+
+cfg = RuntimeConfig.default().next_generation(
+    compression_enabled=True,
+    compression="zlib",
+    spiral_support_enabled=True,
+)
+```
+
+`spiral_support_enabled` is a policy flag for deployments that want to advertise or gate the optional trace workflow layer. The core directory behavior remains available either way.
+
+## Design rule
+
+Spiral support is intentionally neutral:
+
+```text
+Agent / verifier / ranker decides.
+TDS stores the trace, score, provenance, and metadata.
+Dashboard observes storage behavior.
+```
+
+That keeps TDS useful underneath advanced AI workflows while preserving its directory engagement and storage identity.
