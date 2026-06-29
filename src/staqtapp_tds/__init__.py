@@ -1,48 +1,8 @@
-"""
-Staqtapp-TDS — Temporal Directory System
-VFS for ASI-scale computation. v2.3.0
+"""Staqtapp-TDS — Temporal Directory System.
 
-New in v2.1.0: radix directory router and native Swiss-table-inspired EntryIndex backend with GIL-released reads.
-
-Performance uplift over v1.2.0 (all v1.2.0 bug fixes retained)
-──────────────────────────────────────────────────────────────────
-  NEW NUMBA KERNELS
-  - _compute_entry_score_bulk    fused decay score; no temp allocation
-  - _batch_adler32_seed          vectorised Adler-32 over key batches
-  - _slot_offsets_cumsum         prefix-sum for slot index serialisation
-  - _bloom_bits_add              JIT Bloom add (eliminates Python loop)
-  - _bloom_bits_query            JIT Bloom query (eliminates Python loop)
-  - _pack_slot_fixed_batch       JIT 24-byte slot header packer
-  PARALLELISED EXISTING KERNELS
-  - _probability_decay           prange (was sequential range)
-  - _matrix_symbol_swap          prange (was sequential range)
-
-  REGISTRY (HybridRegistry)
-  - Score arrays cached; rebuilt only on structural change (dirty flag)
-  - Eviction calls fused JIT kernel; no per-eviction allocation
-
-  LOOP CACHE
-  - Power-of-two cycle → bitwise AND instead of modulo (zero-branch path)
-
-  BLOOM FILTER
-  - add() / __contains__() delegate to JIT kernels
-  - bits stored as np.ndarray (JIT-compatible; no Python list)
-
-  COMPRESSOR REGISTRY
-  - Direct fn refs cached; eliminates dict lookup on every call
-
-  DIRECTORY I/O
-  - to_bytes() parallelises entry serialisation via thread pool
-  - read() registry check moved outside the lock (lock-free hot path)
-  - parallel_read_all() pre-sizes result dict
-
-  PERSISTENCE
-  - SlotIndex.to_bytes() uses JIT kernel for fixed 24-byte headers
-  - SlotIndex.from_bytes() uses memoryview; no redundant byte copies
-  - TDSWriter._finalise(): single pre-allocated bytearray + one os.write()
-  - TDSWriter.write_parallel(): ordered futures; result list preserves order
-  - TDSPersistence.flush(): BFS deque (no recursion depth risk)
-  - TDSPersistence.load_node(): direct record iteration (half the dict ops)
+A content-neutral, directory-first virtual storage engine with radix routing,
+Swiss-table-style indexing, chunking, persistence, telemetry, admin
+observability, and optional Spiral-compatible trace/provenance support.
 """
 
 from staqtapp_tds.tds_filesystem import (
@@ -99,8 +59,9 @@ from staqtapp_tds.radix import RadixDirectoryRouter
 from staqtapp_tds.config import RuntimeConfig, AdminConfig, ConfigRegistry
 from staqtapp_tds.secure import SecureParams
 from staqtapp_tds.crypto import CryptoProvider, NoopCryptoProvider, XorCryptoProvider
+from staqtapp_tds.spiral import TraceRecord, TraceSetManifest, AggregationRecord, SpiralRun, SpiralRunMetadata, create_spiral_run
 
-__version__ = "2.3.5"
+__version__ = "2.3.7"
 __all__ = [
     # filesystem
     "TDSFileSystem", "TDSDirectory", "TDSEntry",
@@ -114,7 +75,7 @@ __all__ = [
     "TDSReader", "TDSWriter", "TDSPersistence", "ParallelFlusher",
     "SlotIndex", "SlotRecord",
     "FILE_HDR_SIZE", "FILE_MAGIC",
-    # v1.7 semantic infrastructure
+    # semantic infrastructure
     "ManifestPolicy", "MANIFEST_FILENAME", "load_manifest", "write_default_manifest",
     "SRZMetadata", "SRZ_DTYPE", "route_id_for",
     "DirectoryTelemetry", "TelemetryMode", "TELEMETRY_DTYPE", "TelemetryManager", "TelemetrySnapshot",
@@ -126,4 +87,5 @@ __all__ = [
     "ProvenanceTag", "ProvenanceClass", "PROVENANCE_DTYPE",
     "TDSClusterIdentity", "CLUSTER_DTYPE", "query_requires_selector", "RadixDirectoryRouter",
     "RuntimeConfig", "AdminConfig", "ConfigRegistry", "SecureParams", "CryptoProvider", "NoopCryptoProvider", "XorCryptoProvider",
+    "TraceRecord", "TraceSetManifest", "AggregationRecord", "SpiralRun", "SpiralRunMetadata", "create_spiral_run",
 ]

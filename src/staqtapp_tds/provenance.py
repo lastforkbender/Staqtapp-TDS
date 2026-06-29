@@ -1,8 +1,5 @@
-"""Lightweight provenance tags for Staqtapp-TDS v1.8.0.
+"""Lightweight provenance tags for Staqtapp-TDS."""
 
-Provenance is descriptive metadata only. TDS records whether data is REAL,
-SYNTHETIC, DERIVED, SPECULATIVE, MIXED, or UNKNOWN; it does not judge truth.
-"""
 from __future__ import annotations
 
 import zlib

@@ -1,9 +1,5 @@
-"""
-Latency helpers for Staqtapp-TDS v1.7.0.
+"""Latency helpers for Staqtapp-TDS."""
 
-The VFS records operational timing only. It does not interpret latency as
-reasoning quality; callers above the VFS may do that if they choose.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass

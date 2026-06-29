@@ -1,6 +1,6 @@
 """Minimal cluster identity feedback for related .tds files.
 
-This is intentionally small in v1.8.0.  It gives a group of .tds shards one
+This is intentionally small in current release.  It gives a group of .tds shards one
 stable identity and returns structured feedback for query selectors. It does
 not scan huge clusters by default and does not become a reasoning layer.
 """

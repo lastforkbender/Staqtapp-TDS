@@ -1,10 +1,5 @@
-"""
-Staqtapp-TDS v1.6.0 arena layer.
+"""Shared-memory arena utilities for Staqtapp-TDS."""
 
-Pure-Python byte arena that preserves the int64 handle contract needed by a
-future mmap/shared_memory/native allocator. The public VFS can depend on this
-small interface instead of depending on Python object identity.
-"""
 from __future__ import annotations
 
 import struct

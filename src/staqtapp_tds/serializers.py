@@ -1,9 +1,5 @@
-"""Payload serializer policy for Staqtapp-TDS v1.7.3.
+"""Payload serializer policy for Staqtapp-TDS."""
 
-The core EntryIndex remains name -> handle/entry.  This module only decides how
-entry payloads are represented when stored: Python variable data, first-class
-text, JSON-safe values, NumPy arrays, compression policy, and hashes.
-"""
 from __future__ import annotations
 
 import hashlib

@@ -1,10 +1,5 @@
-"""Reserved namespace support for Staqtapp-TDS v1.7.2.
+"""Reserved namespace support for Staqtapp-TDS."""
 
-Reserved namespaces let a manifest protect future directory names, aliases,
-and route identifiers without forcing the VFS to predict their meaning. The
-feature is intentionally cold-path oriented: checks occur when creating or
-registering directories, not during ordinary entry reads.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

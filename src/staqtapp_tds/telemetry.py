@@ -1,4 +1,5 @@
-"""Directory telemetry for Staqtapp-TDS v1.7.0."""
+"""Directory telemetry and observation snapshots for Staqtapp-TDS."""
+
 from __future__ import annotations
 
 import time
@@ -184,6 +185,11 @@ class TelemetryManager:
             "gil_released_ops": 0,
             "native_backend_ops": 0,
             "python_backend_ops": 0,
+            "spiral_runs": 0,
+            "spiral_search_traces": 0,
+            "spiral_trace_sets": 0,
+            "spiral_aggregations": 0,
+            "spiral_finals": 0,
         }
         self._timers_ns: Dict[str, int] = {
             "read_ns": 0,
@@ -264,6 +270,21 @@ class TelemetryManager:
         if elapsed_ns:
             self.record_timer("chunk_ns", elapsed_ns)
 
+    def record_spiral_event(self, kind: str, amount: int = 1) -> None:
+        """Record optional Spiral-compatible pipeline activity.
+
+        These counters describe trace-shaped storage behavior only. They do not
+        imply that TDS ranked, reasoned, rewarded, trained, or aggregated.
+        """
+        key_map = {
+            "run_created": "spiral_runs",
+            "search_trace": "spiral_search_traces",
+            "trace_set": "spiral_trace_sets",
+            "aggregation": "spiral_aggregations",
+            "final": "spiral_finals",
+        }
+        self.incr(key_map.get(str(kind), str(kind)), amount)
+
     def _average_ms(self, total_key: str) -> float:
         total = int(self._timers_ns.get(total_key, 0))
         count = max(1, int(self._timer_counts.get(total_key, 0)))
@@ -285,13 +306,20 @@ class TelemetryManager:
             mode = "balanced"
         stored = max(1, counters.get("bytes_stored", 0))
         ratio = counters.get("bytes_raw", 0) / stored
+        spiral_events = (
+            counters.get("spiral_search_traces", 0)
+            + counters.get("spiral_trace_sets", 0)
+            + counters.get("spiral_aggregations", 0)
+            + counters.get("spiral_finals", 0)
+        )
         return {
             "workload_mode": mode,
             "read_percent": read_pct,
             "write_percent": write_pct,
             "compression_ratio": round(ratio, 3),
             "pressure": "low" if counters.get("errors", 0) == 0 else "attention",
-            "current_operation": "idle",  # reserved for future command/event bus status
+            "current_operation": "trace_pipeline" if spiral_events else "idle",
+            "spiral_trace_activity": spiral_events,
         }
 
     def _recommendations(self, counters: Dict[str, int], indexes: Dict[str, object], behavior: Dict[str, object]) -> List[Dict[str, str]]:
@@ -361,6 +389,17 @@ class TelemetryManager:
                 "errors": counters.get("errors", 0),
             }
             storage.update(storage_extra)
+            spiral = {
+                "enabled": True,
+                "mode": "neutral-trace-storage",
+                "runs": counters.get("spiral_runs", 0),
+                "search_traces": counters.get("spiral_search_traces", 0),
+                "trace_sets": counters.get("spiral_trace_sets", 0),
+                "aggregations": counters.get("spiral_aggregations", 0),
+                "final_outputs": counters.get("spiral_finals", 0),
+                "ranking_owner": "external",
+            }
+            storage["spiral"] = spiral
             behavior = self._behavior(counters)
             recs = self._recommendations(counters, indexes, behavior)
             snap = TelemetrySnapshot(

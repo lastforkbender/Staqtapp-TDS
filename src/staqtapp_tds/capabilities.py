@@ -1,4 +1,5 @@
-"""Capability registry for Staqtapp-TDS v1.7.2."""
+"""Capability registry for Staqtapp-TDS."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

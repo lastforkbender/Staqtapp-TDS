@@ -1,4 +1,5 @@
-"""Read-once manifest policy for Staqtapp-TDS v1.7.3."""
+"""Read-once manifest policy for Staqtapp-TDS."""
+
 from __future__ import annotations
 
 import hashlib

@@ -1,45 +1,8 @@
-"""
-////////////////////////////////////////////////////////////////////////////////
->>> Staqtapp-TDS v2.0.1 / tds_filesystem.py
-////////////////////////////////////////////////////////////////////////////////
+"""Core Temporal Directory System filesystem implementation.
 
-Staqtapp-TDS / Temporal Directory System
-VFS for ASI large scale computation
-Extension: .tds
-
-Performance uplift over v1.2.0
-──────────────────────────────
-  Numba expansions
-  - _probability_decay          parallelised prange (was sequential)
-  - _matrix_symbol_swap         parallelised prange (was sequential)
-  - _batch_adler32              new: vectorised hash for N keys at once
-  - _compute_entry_score_bulk   new: fused count * exp decay, no temp alloc
-  - _slot_offsets_cumsum        new: prefix-sum for slot index serialisation
-  - _bloom_bits_set             new: JIT bit-twiddling for Bloom add path
-  - _validate_float32_shape     new: dtype+shape guard inside JIT (avoids
-                                     Python isinstance overhead in hot loop)
-
-  Cache / registry
-  - HybridRegistry replaces _store dict with fixed numpy structured records
-  - SharedMemoryArena introduces int64 offset handles for raw entry payloads
-  - EntryIndex replaces direct _entries dict with a Python-native, sharded,
-    handle-oriented map that keeps the public Python API while creating the
-    exact seam for a future C/pybind11 nogil backend
-  - LoopCacheSlot.write() checks modulo with bitwise AND when cycle is a
-    power-of-two (zero-branch fast path)
-
-  Memory / serialisation
-  - _serialize_payload: numpy path bypasses pickle entirely for ndarray
-  - CompressorRegistry: compress/decompress now hold direct fn refs,
-    not a dict lookup per call
-  - TDSDirectory.read() returns cached .data attribute without re-locking
-    after the first load (lock-free hot path)
-
-  I/O
-  - to_bytes() assembles payloads concurrently via the thread pool then
-    joins — avoids a sequential bottleneck on large directories
-  - parallel_read_all() signature unchanged; hot path avoids extra
-    dict allocation by pre-sizing with len(keys)
+This module contains the directory, entry, compression, chunking, Bloom, registry,
+telemetry, and VFS orchestration code. Historical release comments are kept out
+of the runtime source so package versioning remains centralized.
 """
 
 from __future__ import annotations
@@ -242,7 +205,7 @@ class EntrySchema:
 
 
 # ////////////////////////////////////////////////////////////////////////////////
-# § 2  NUMBA-JIT KERNELS  (expanded for v1.3.0)
+# § 2  NUMBA-JIT KERNELS  (expanded for .0)
 # ////////////////////////////////////////////////////////////////////////////////
 
 @njit(cache=True)
@@ -263,7 +226,7 @@ def _probability_decay(access_counts: np.ndarray,
                        decay_lambda: float) -> np.ndarray:
     """
     Parallelised decay scoring.
-    v1.3: prange over outer loop (was sequential range).
+    prange over outer loop (was sequential range).
     Each lane is independent so no reduction needed.
     """
     n = access_counts.shape[0]
@@ -280,7 +243,7 @@ def _matrix_symbol_swap(matrix: np.ndarray,
                         new_val: np.float64) -> np.ndarray:
     """
     Parallelised in-place symbol swap.
-    v1.3: outer prange (rows independent).
+    outer prange (rows independent).
     """
     rows, cols = matrix.shape
     for i in prange(rows):
@@ -301,7 +264,7 @@ def _compute_entry_score_bulk(access_counts: np.ndarray,
     Kept separate so the registry can call this in the hot eviction path
     without allocating a second buffer.
 
-    v1.3: NEW — fused, parallelised, no intermediate allocations.
+    NEW — fused, parallelised, no intermediate allocations.
     """
     n = access_counts.shape[0]
     scores = np.empty(n, dtype=np.float64)
@@ -318,7 +281,7 @@ def _batch_adler32_seed(keys_flat: np.ndarray,
     Vectorised Adler-32 over a batch of byte sequences packed into a
     flat uint8 array.  offsets[i]..offsets[i+1] is the i-th key.
 
-    v1.3: NEW — replaces Python-loop zlib.adler32 in hot Bloom/hash paths.
+    NEW — replaces Python-loop zlib.adler32 in hot Bloom/hash paths.
     Adler-32 constants: MOD_ADLER = 65521.
     """
     n = offsets.shape[0] - 1
@@ -340,7 +303,7 @@ def _batch_adler32_seed(keys_flat: np.ndarray,
 def _slot_offsets_cumsum(lengths: np.ndarray) -> np.ndarray:
     """
     Prefix-sum over slot byte-lengths -> byte start positions.
-    v1.3: NEW — used by SlotIndex.to_bytes() parallel path.
+    NEW — used by SlotIndex.to_bytes() parallel path.
     """
     n = lengths.shape[0]
     out = np.empty(n + 1, dtype=np.int64)
@@ -358,7 +321,7 @@ def _bloom_bits_query(bits: np.ndarray,
                       m: np.uint64) -> bool:
     """
     JIT Bloom query: returns False on definite miss.
-    v1.3: NEW — eliminates Python loop + attribute lookups in __contains__.
+    NEW — eliminates Python loop + attribute lookups in __contains__.
     """
     for i in range(k):
         bit = int((h1 + np.uint64(i) * h2) % m)
@@ -375,7 +338,7 @@ def _bloom_bits_add(bits: np.ndarray,
                     m: np.uint64) -> None:
     """
     JIT Bloom add path.
-    v1.3: NEW — eliminates Python loop in BloomFilter.add().
+    NEW — eliminates Python loop in BloomFilter.add().
     """
     for i in range(k):
         bit = int((h1 + np.uint64(i) * h2) % m)
@@ -531,7 +494,7 @@ class LoopCacheSlot:
     """
     Stores a value every `cycle` writes.
 
-    v1.3: power-of-two fast path uses bitwise AND instead of modulo.
+    power-of-two fast path uses bitwise AND instead of modulo.
     """
     name: str
     cycle: int
@@ -603,7 +566,7 @@ class LoopCacheManager:
 class ConcurrencyPool:
     """
     Singleton thread-pool + async event loop.
-    Unchanged from v1.2.0 (already correct).
+    Unchanged from earlier releases (already correct).
     """
     _global_instance: Optional['ConcurrencyPool'] = None
     _init_lock = threading.Lock()
@@ -678,14 +641,14 @@ class SymbolTable:
 
 
 # ////////////////////////////////////////////////////////////////////////////////
-# § 6b  BLOOM FILTER  (v1.3: JIT add/query paths)
+# § 6b  BLOOM FILTER  (JIT add/query paths)
 # ////////////////////////////////////////////////////////////////////////////////
 
 class BloomFilter:
     """
     Bloom filter for string keys.
 
-    v1.3: add() and __contains__() delegate bit manipulation to JIT kernels
+    add() and __contains__() delegate bit manipulation to JIT kernels
     _bloom_bits_add / _bloom_bits_query, eliminating the Python loop and
     attribute lookups that dominated the miss path at high slot counts.
     """
@@ -850,7 +813,7 @@ class TDSDirectory:
         self._ts_create = int(time.time_ns())
         self._ts_mod    = self._ts_create
         self._entry_index = EntryIndex(shards=64)
-        self._entries = self._entry_index  # compatibility alias; not a raw dict in v1.5
+        self._entries = self._entry_index  # compatibility alias; not a raw dict in 
         self._children: RadixDirectoryRouter['TDSDirectory'] = RadixDirectoryRouter()
         self._schemas:  Dict[str, EntrySchema]    = {}
         self._lock      = threading.RLock()
@@ -869,7 +832,7 @@ class TDSDirectory:
         self.compression_policy = CompressionPolicy(enabled=bool(_cfg.compression_enabled), codec=_cfg.compression, threshold_bytes=int(_cfg.compression_threshold_bytes))
         self._policy_generation = int(_cfg.generation)
 
-        # v1.7 semantic infrastructure: read-once policy, optional SRZ, and
+        # semantic infrastructure: read-once policy, optional SRZ, and
         # lightweight telemetry. These are separate module objects; filesystem.py
         # only orchestrates them.
         if manifest_policy is None and parent is not None:
@@ -1191,7 +1154,7 @@ class TDSDirectory:
     def parallel_read_all(self) -> Dict[str, Any]:
         """
         Read all entries concurrently.
-        v1.3: pre-sized output dict to avoid re-hashing during fill.
+        pre-sized output dict to avoid re-hashing during fill.
         """
         with self._lock:
             keys = self._entries.keys()
@@ -1233,7 +1196,7 @@ class TDSDirectory:
 
     def to_bytes(self) -> bytes:
         """
-        v1.3: serialise payloads in parallel, then join.
+        serialise payloads in parallel, then join.
         Avoids sequential bottleneck on large directories.
         """
         header = self.header_bytes()
@@ -1441,7 +1404,7 @@ class TDSFileSystem:
         }
 
     def observation_snapshot(self, *, force: bool = False) -> Dict[str, object]:
-        """Return the cached v2.3 dashboard/observability snapshot."""
+        """Return the cached dashboard/observability snapshot."""
         return self.telemetry_manager.snapshot(force=force)
 
     def resolve(self, path: str) -> TDSDirectory:
@@ -1600,7 +1563,7 @@ class WriteAheadLog:
 # ////////////////////////////////////////////////////////////////////////////////
 
 def demo():
-    print(">> Initialising TDS VFS v1.3.0 ...")
+    print(">> Initialising TDS VFS .0 ...")
     fs = TDSFileSystem("asi_root")
 
     vec_db = fs.makedirs("databases/vectors",

@@ -1,10 +1,5 @@
-"""
-EntryIndex facade for Staqtapp-TDS v2.1.0.
+"""EntryIndex facade for Staqtapp-TDS."""
 
-The VFS talks to this small class only. Today it defaults to a pure-Python
-backend; later it can select a Cython/pybind11 backend that releases the GIL for
-hot reads while keeping the same Python-facing API.
-"""
 from __future__ import annotations
 
 import os

@@ -1,8 +1,5 @@
-"""NumPy/Numba-friendly invariant checks for Staqtapp-TDS v1.7.3.
+"""NumPy/Numba-friendly invariant checks for Staqtapp-TDS."""
 
-The invariant engine is a deterministic consistency checker, not an AI reasoning
-layer.  It detects entropy-like disorder by checking concrete VFS facts.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

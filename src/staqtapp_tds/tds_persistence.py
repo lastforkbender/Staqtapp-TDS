@@ -1,46 +1,7 @@
-"""
-////////////////////////////////////////////////////////////////////////////////
->>> Staqtapp-TDS v1.7.3 / tds_persistence.py
-////////////////////////////////////////////////////////////////////////////////
+"""TDS persistence, slot index, reader, writer, and parallel flush support.
 
-Staqtapp-TDS / Temporal Directory System
-VFS for ASI large scale computation
-Extension: .tds
-
-Performance uplift over v1.2.0 (all bugs from that release already fixed)
-──────────────────────────────────────────────────────────────────────────
-  Numba expansions
-  - _pack_slot_fixed_batch   NEW: JIT packs the 24-byte fixed portion of
-                                  every SlotRecord into a pre-allocated buffer,
-                                  replacing per-slot struct.pack in Python
-  - _slot_binary_search      parallelised (already JIT, now parallel=True
-                                  would be counterproductive on a binary search
-                                  — kept sequential, added cache=True)
-  - _build_sorted_order      unchanged; argsort via numpy is already fast
-
-  SlotIndex
-  - to_bytes() uses _pack_slot_fixed_batch to fill fixed headers in one JIT
-    pass; only variable-length name bytes are appended in Python
-  - from_bytes() pre-reads slot_count records in a tighter loop (no per-iter
-    attribute lookup overhead)
-
-  TDSReader
-  - read_many() delegates to thread pool as before; no change needed
-  - _load_index(): index bytes sliced once via memoryview; no full copy
-
-  TDSWriter
-  - _finalise(): data_block built with pre-allocated bytearray + memoryview
-    writes (avoids repeated b''.join() on large directories)
-  - write_parallel(): serialisation futures submitted as a batch; result
-    ordering preserved via enumerate
-
-  TDSPersistence
-  - flush(): collector avoids recursion stack via explicit deque
-  - load_node(): reader.keys() replaced with reader._idx.all_records()
-    direct iteration — eliminates intermediate list
-
-  _LazyEntry
-  - Unchanged: already optimal for the deferred-load contract
+Persistence is content-neutral and records compact metadata for entries while
+leaving higher-level workflow semantics to optional modules.
 """
 
 from __future__ import annotations
@@ -138,7 +99,7 @@ def _pack_slot_fixed_batch(name_hashes: np.ndarray,
         fmt_id     2B  uint16
         name_len   2B  uint16
 
-    v1.3: NEW — eliminates per-slot struct.pack() Python call in to_bytes().
+    NEW — eliminates per-slot struct.pack() Python call in to_bytes().
     """
     n = name_hashes.shape[0]
     for i in range(n):
@@ -215,7 +176,7 @@ class SlotIndex:
     """
     O(1) slot lookup via dict primary path.
 
-    v1.3: to_bytes() uses _pack_slot_fixed_batch (JIT) for the 24-byte fixed
+    to_bytes() uses _pack_slot_fixed_batch (JIT) for the 24-byte fixed
     header portion of every record; name bytes appended in Python.
     from_bytes() uses a memoryview to avoid redundant copies.
     """
@@ -260,7 +221,7 @@ class SlotIndex:
 
     def to_bytes(self) -> bytes:
         """
-        v1.3: JIT kernel fills fixed 24-byte headers in one pass;
+        JIT kernel fills fixed 24-byte headers in one pass;
         Python only appends variable-length name bytes.
         """
         with self._lock:
@@ -305,7 +266,7 @@ class SlotIndex:
     @classmethod
     def from_bytes(cls, buf: bytes, slot_count: int) -> 'SlotIndex':
         """
-        v1.3: uses memoryview to avoid redundant byte copies on each record.
+        uses memoryview to avoid redundant byte copies on each record.
         """
         idx    = cls()
         mv     = memoryview(buf)
@@ -331,7 +292,7 @@ class TDSReader:
     """
     Mmap random-access reader for a .tds file.
 
-    v1.3: _load_index() slices index bytes via memoryview to avoid a full
+    _load_index() slices index bytes via memoryview to avoid a full
     copy before passing to SlotIndex.from_bytes().
     """
 
@@ -422,7 +383,7 @@ class TDSWriter:
     """
     Atomic writer: shadow file -> fsync -> rename.
 
-    v1.3
+    
     - _finalise(): pre-allocates a bytearray for the full file and writes
       blocks in-place via memoryview slices, then does a single os.write().
       Avoids repeated b''.join() overhead on large directories.
@@ -498,7 +459,7 @@ class TDSWriter:
     def _finalise(self, idx: SlotIndex, data_parts: List[bytes],
                   directory: TDSDirectory) -> int:
         """
-        v1.3: pre-allocate full bytearray, fill via memoryview slices,
+        pre-allocate full bytearray, fill via memoryview slices,
         write in a single os.write() call (one syscall, one kernel copy).
         """
         data_block   = b''.join(data_parts)
@@ -572,7 +533,7 @@ class TDSPersistence:
     """
     Mounts a TDSFileSystem to a real directory.
 
-    v1.3
+    
     - flush() uses an explicit deque instead of recursion — no Python stack
       growth on deeply nested filesystems.
     - load_node() iterates reader._idx.all_records() directly instead of
@@ -670,7 +631,7 @@ class TDSPersistence:
         with self._lock:
             self._readers[str(tds_path)] = reader
 
-        # v1.3: iterate records directly — no keys() + lookup round-trip
+        # iterate records directly — no keys() + lookup round-trip
         for rec in reader._idx.all_records():
             short_name = rec.name.rsplit('/', 1)[-1]
             entry = _LazyEntry(
@@ -732,7 +693,7 @@ class TDSPersistence:
 
 class _LazyEntry(TDSEntry):
     """
-    Deferred-load entry; unchanged from v1.2.0 (already correct and optimal).
+    Deferred-load entry; unchanged from earlier releases (already correct and optimal).
     """
 
     def __init__(self, slot_key: str, short_name: str,

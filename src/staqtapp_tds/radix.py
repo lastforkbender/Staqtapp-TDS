@@ -1,10 +1,5 @@
-"""Radix path router for Staqtapp-TDS v2.1.0.
+"""Radix path router for Staqtapp-TDS."""
 
-This module intentionally keeps a small Python implementation: path traversal is
-still Python-facing, but child routing is no longer coupled to raw dict access.
-The API mirrors the small mapping surface TDSDirectory needs while creating the
-future seam for a native radix backend.
-"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field

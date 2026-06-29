@@ -33,6 +33,7 @@ class RuntimeConfig:
     numba_enabled: bool = True
     numba_parallel: bool = False
     admin_panel_enabled: bool = False
+    spiral_support_enabled: bool = False
     network_mode: str = "local-only"
 
     @staticmethod
@@ -68,6 +69,7 @@ class RuntimeConfig:
             "numba_enabled": self.numba_enabled,
             "numba_parallel": self.numba_parallel,
             "admin_panel_enabled": self.admin_panel_enabled,
+            "spiral_support_enabled": self.spiral_support_enabled,
             "network_mode": self.network_mode,
         }
 

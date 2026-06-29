@@ -1,4 +1,5 @@
-"""Semantic Routing Zone metadata for Staqtapp-TDS v1.7.0."""
+"""Semantic Routing Zone metadata for Staqtapp-TDS."""
+
 from __future__ import annotations
 
 import zlib
