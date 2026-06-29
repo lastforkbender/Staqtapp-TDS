@@ -100,7 +100,7 @@ from staqtapp_tds.config import RuntimeConfig, AdminConfig, ConfigRegistry
 from staqtapp_tds.secure import SecureParams
 from staqtapp_tds.crypto import CryptoProvider, NoopCryptoProvider, XorCryptoProvider
 
-__version__ = "2.3.0"
+__version__ = "2.3.5"
 __all__ = [
     # filesystem
     "TDSFileSystem", "TDSDirectory", "TDSEntry",

@@ -302,34 +302,51 @@ static PyObject *NativeHandleIndex_size(NativeHandleIndex *self, PyObject *Py_UN
     return PyLong_FromSsize_t(size);
 }
 
-static PyObject *NativeHandleIndex_stats(NativeHandleIndex *self, PyObject *Py_UNUSED(ignored)) {
-    PyObject *d = PyDict_New();
-    if (!d) return NULL;
+static void stats_scan_nogil(NativeHandleIndex *self, Py_ssize_t *size, Py_ssize_t *capacity,
+                             Py_ssize_t *tombstones, int64_t *next_handle,
+                             Py_ssize_t *max_probe, double *avg_probe) {
     pthread_rwlock_rdlock(&self->lock);
-    PyDict_SetItemString(d, "backend", PyUnicode_FromString("native-c-swiss-entryindex"));
-    PyDict_SetItemString(d, "size", PyLong_FromSsize_t(self->size));
-    Py_ssize_t max_probe = 0;
-    double avg_probe = 0.0;
+    *size = self->size;
+    *capacity = self->capacity;
+    *tombstones = self->tombstones;
+    *next_handle = self->next_handle;
+    *max_probe = 0;
+    *avg_probe = 0.0;
     for (Py_ssize_t i = 0; i < self->capacity; ++i) {
         if (self->slots[i].state == 1) {
             Py_ssize_t p = probe_length_for_slot(self->slots, self->capacity, &self->slots[i]);
-            if (p > max_probe) max_probe = p;
-            avg_probe += (double)p;
+            if (p > *max_probe) *max_probe = p;
+            *avg_probe += (double)p;
         }
     }
-    if (self->size > 0) avg_probe /= (double)self->size;
-    PyDict_SetItemString(d, "capacity", PyLong_FromSsize_t(self->capacity));
-    PyDict_SetItemString(d, "tombstones", PyLong_FromSsize_t(self->tombstones));
-    PyDict_SetItemString(d, "load_factor", PyFloat_FromDouble(self->capacity ? ((double)self->size / (double)self->capacity) : 0.0));
+    if (*size > 0) *avg_probe /= (double)*size;
+    pthread_rwlock_unlock(&self->lock);
+}
+
+static PyObject *NativeHandleIndex_stats(NativeHandleIndex *self, PyObject *Py_UNUSED(ignored)) {
+    Py_ssize_t size = 0, capacity = 0, tombstones = 0, max_probe = 0;
+    int64_t next_handle = 0;
+    double avg_probe = 0.0;
+    Py_BEGIN_ALLOW_THREADS
+    stats_scan_nogil(self, &size, &capacity, &tombstones, &next_handle, &max_probe, &avg_probe);
+    Py_END_ALLOW_THREADS
+
+    PyObject *d = PyDict_New();
+    if (!d) return NULL;
+    PyDict_SetItemString(d, "backend", PyUnicode_FromString("native-c-swiss-entryindex"));
+    PyDict_SetItemString(d, "size", PyLong_FromSsize_t(size));
+    PyDict_SetItemString(d, "capacity", PyLong_FromSsize_t(capacity));
+    PyDict_SetItemString(d, "tombstones", PyLong_FromSsize_t(tombstones));
+    PyDict_SetItemString(d, "load_factor", PyFloat_FromDouble(capacity ? ((double)size / (double)capacity) : 0.0));
     PyDict_SetItemString(d, "max_probe", PyLong_FromSsize_t(max_probe));
     PyDict_SetItemString(d, "avg_probe", PyFloat_FromDouble(avg_probe));
-    PyDict_SetItemString(d, "next_handle", PyLong_FromLongLong(self->next_handle));
+    PyDict_SetItemString(d, "next_handle", PyLong_FromLongLong(next_handle));
     PyDict_SetItemString(d, "gil_released_get_handle", Py_True);
     PyDict_SetItemString(d, "gil_released_get_handles", Py_True);
     PyDict_SetItemString(d, "gil_released_pop_lookup", Py_True);
+    PyDict_SetItemString(d, "gil_released_stats_scan", Py_True);
     PyDict_SetItemString(d, "swiss_control_bytes", Py_True);
     PyDict_SetItemString(d, "probing", PyUnicode_FromString("triangular"));
-    pthread_rwlock_unlock(&self->lock);
     return d;
 }
 
