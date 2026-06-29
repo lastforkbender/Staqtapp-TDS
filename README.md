@@ -1,13 +1,15 @@
 <p align="center">
-    <img src="docs/dashboard-v2.3.0.jpeg" alt="Staqtapp-TDS v2.3.0 Dashboard" width="100%"/>
+    <img src="docs/dashboard-v2.3.5.jpeg" alt="Staqtapp-TDS v2.3.0 Dashboard" width="100%"/>
 </p>
 
 
-# 🟦🟪🟧 Staqtapp-TDS v2.3.0
+Professional observability dashboard release. Adds the polished dark blue/purple/orange admin interface, expanded SVG icon set, Live Architecture panel, Timeline view, and snapshot-only JavaScript rendering while preserving the TDS hot-path boundary.
+
+# 🟦🟪🟧 Staqtapp-TDS v2.3.5
 
 **Temporal Directory System** — a Python-first virtual storage layer for named Python variables, UTF-8 text payloads, semantic routing metadata, provenance tags, config generations, and observable high-throughput lookup paths.
 
-v2.3.0 turns the admin dashboard into a real **observation layer** without making it part of the hard TDS data path.
+v2.3.1 turns the admin dashboard into a real **observation layer** without making it part of the hard TDS data path.
 
 ```text
 TDS Core
@@ -20,7 +22,7 @@ Local Browser Panel
 
 The dashboard observes. It does not repeatedly scan or control hot internals.
 
-## What is new in v2.3.0
+## What is new in v2.3.1
 
 ### TelemetryManager
 
@@ -142,3 +144,7 @@ This package was checked with:
 47 passed, 2 skipped
 python compile check passed
 ```
+
+### v2.3.1 Admin Dashboard
+
+The localhost admin panel is now a packaged dashboard subsystem under `src/staqtapp_tds/admin/` with reusable template, CSS, JavaScript, and SVG icon assets. The browser polls `/status.json` every two seconds and renders cached telemetry snapshots only; deep scans and benchmarks remain explicit admin actions.

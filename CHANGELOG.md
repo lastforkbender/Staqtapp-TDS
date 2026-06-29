@@ -1,4 +1,18 @@
+# Staqtapp-TDS v2.3.5
+
+Professional observability dashboard release. Adds the polished dark blue/purple/orange admin interface, expanded SVG icon set, Live Architecture panel, Timeline view, and snapshot-only JavaScript rendering while preserving the TDS hot-path boundary.
+
 # Changelog
+
+## 2.3.1
+
+- Rebuilt the admin browser panel as a real packaged dashboard subsystem instead of a monolithic HTML string.
+- Added dark Staqtapp-TDS telemetry theme matching the selected blue/purple/orange dashboard direction.
+- Added packaged SVG icons, CSS, and JavaScript under `src/staqtapp_tds/admin/static/`.
+- Added `templates/dashboard.html` for maintainable dashboard layout.
+- Kept `/status.json` as the only auto-refresh data source so the browser remains a snapshot observer.
+- Extended native Swiss-table stats scan to release the GIL during the probe-statistics scan.
+
 
 ## v2.3.0 — Observation Layer and Adaptive Dashboard
 

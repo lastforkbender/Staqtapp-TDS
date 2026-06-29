@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "staqtapp-tds"
-version = "2.3.0"
+version = "2.3.5"
 description = "Staqtapp-TDS Temporal Directory System VFS"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -24,3 +24,6 @@ testpaths = ["tests"]
 
 [project.scripts]
 staqtapp-tds-admin = "staqtapp_tds.admin.console:main"
+
+[tool.setuptools.package-data]
+"staqtapp_tds.admin" = ["templates/*.html", "static/css/*.css", "static/js/*.js", "static/icons/*.svg"]
