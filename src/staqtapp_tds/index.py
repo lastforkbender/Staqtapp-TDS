@@ -64,6 +64,25 @@ class EntryIndex:
     def stats(self) -> Any:
         return self._impl.stats() if hasattr(self._impl, "stats") else EntryIndexStats(self.backend_name, len(self), -1, -1)
 
+    def native_execution_stats(self) -> dict:
+        if hasattr(self._impl, "native_execution_stats"):
+            return dict(self._impl.native_execution_stats())
+        return {
+            "backend": self.backend_name,
+            "gil_released_put": False,
+            "gil_released_get_handle": False,
+            "gil_released_get_handles": False,
+            "gil_released_pop_lookup": False,
+            "gil_released_stats_scan": False,
+            "native_put_calls": 0,
+            "native_lookup_calls": 0,
+            "native_batch_lookup_calls": 0,
+            "native_pop_calls": 0,
+            "native_stats_calls": 0,
+            "gil_released_calls": 0,
+            "python_native_transitions": 0,
+        }
+
     def __setitem__(self, key: str, entry: Any) -> None:
         self.put(key, entry)
 

@@ -21,6 +21,13 @@ typedef struct {
     Py_ssize_t size;
     Py_ssize_t tombstones;
     int64_t next_handle;
+    uint64_t native_put_calls;
+    uint64_t native_lookup_calls;
+    uint64_t native_batch_lookup_calls;
+    uint64_t native_pop_calls;
+    uint64_t native_stats_calls;
+    uint64_t gil_released_calls;
+    uint64_t python_native_transitions;
     pthread_rwlock_t lock;
 } NativeHandleIndex;
 
@@ -50,6 +57,14 @@ static void free_slots(Slot *slots, Py_ssize_t cap) {
 static inline uint8_t ctrl_from_hash(uint64_t hash) {
     uint8_t c = (uint8_t)((hash >> 57) & 0x7F);
     return c ? c : 1;
+}
+
+static inline void bump_u64(uint64_t *ptr) {
+#if defined(__GNUC__) || defined(__clang__)
+    __sync_fetch_and_add(ptr, 1);
+#else
+    (*ptr)++;
+#endif
 }
 
 static Py_ssize_t find_slot(Slot *slots, Py_ssize_t cap, const char *key, Py_ssize_t len, uint64_t hash, int *found) {
@@ -123,13 +138,13 @@ static int64_t pop_handle_nogil(NativeHandleIndex *self, const char *key, Py_ssi
 static int resize_index(NativeHandleIndex *self, Py_ssize_t newcap) {
     newcap = round_pow2(newcap);
     Slot *newslots = (Slot*)calloc((size_t)newcap, sizeof(Slot));
-    if (!newslots) { PyErr_NoMemory(); return -1; }
+    if (!newslots) return -1;
     for (Py_ssize_t i = 0; i < self->capacity; ++i) {
         Slot *old = &self->slots[i];
         if (old->state != 1) continue;
         int found = 0;
         Py_ssize_t idx = find_slot(newslots, newcap, old->key, old->len, old->hash, &found);
-        if (idx < 0) { free_slots(newslots, newcap); PyErr_SetString(PyExc_RuntimeError, "native index resize failed"); return -1; }
+        if (idx < 0) { free_slots(newslots, newcap); return -1; }
         newslots[idx] = *old;
         old->key = NULL;
         old->state = 0;
@@ -156,6 +171,13 @@ static PyObject *NativeHandleIndex_new(PyTypeObject *type, PyObject *args, PyObj
     self->size = 0;
     self->tombstones = 0;
     self->next_handle = 1;
+    self->native_put_calls = 0;
+    self->native_lookup_calls = 0;
+    self->native_batch_lookup_calls = 0;
+    self->native_pop_calls = 0;
+    self->native_stats_calls = 0;
+    self->gil_released_calls = 0;
+    self->python_native_transitions = 0;
     pthread_rwlock_init(&self->lock, NULL);
     return (PyObject*)self;
 }
@@ -179,23 +201,30 @@ static void NativeHandleIndex_dealloc(NativeHandleIndex *self) {
     Py_TYPE(self)->tp_free((PyObject*)self);
 }
 
-static PyObject *NativeHandleIndex_put(NativeHandleIndex *self, PyObject *args) {
-    const char *key; Py_ssize_t len; int64_t handle = 0;
-    if (!PyArg_ParseTuple(args, "s#|L", &key, &len, &handle)) return NULL;
-    if (len <= 0) { PyErr_SetString(PyExc_ValueError, "key must be non-empty bytes/str"); return NULL; }
-    char *copy = NULL;
+static int put_handle_nogil(NativeHandleIndex *self, const char *key, Py_ssize_t len, int64_t requested_handle, int64_t *out_handle) {
     uint64_t hash = fnv1a64(key, len);
+    int rc = 0;
     pthread_rwlock_wrlock(&self->lock);
-    if (maybe_resize(self) < 0) { pthread_rwlock_unlock(&self->lock); return NULL; }
+    if (maybe_resize(self) < 0) {
+        rc = -1;
+        goto done;
+    }
     int found = 0;
     Py_ssize_t idx = find_slot(self->slots, self->capacity, key, len, hash, &found);
-    if (idx < 0) { pthread_rwlock_unlock(&self->lock); PyErr_SetString(PyExc_RuntimeError, "native index is full"); return NULL; }
+    if (idx < 0) {
+        rc = -2;
+        goto done;
+    }
+    int64_t handle = requested_handle;
     if (found) {
         if (handle > 0) self->slots[idx].handle = handle;
-        handle = self->slots[idx].handle;
+        *out_handle = self->slots[idx].handle;
     } else {
-        copy = (char*)malloc((size_t)len);
-        if (!copy) { pthread_rwlock_unlock(&self->lock); PyErr_NoMemory(); return NULL; }
+        char *copy = (char*)malloc((size_t)len);
+        if (!copy) {
+            rc = -1;
+            goto done;
+        }
         memcpy(copy, key, (size_t)len);
         if (handle <= 0) handle = self->next_handle++;
         self->slots[idx].key = copy;
@@ -206,9 +235,28 @@ static PyObject *NativeHandleIndex_put(NativeHandleIndex *self, PyObject *args) 
         if (self->slots[idx].state == 2) self->tombstones--;
         self->slots[idx].state = 1;
         self->size++;
+        *out_handle = handle;
     }
+done:
     pthread_rwlock_unlock(&self->lock);
-    return PyLong_FromLongLong(handle);
+    return rc;
+}
+
+static PyObject *NativeHandleIndex_put(NativeHandleIndex *self, PyObject *args) {
+    const char *key; Py_ssize_t len; int64_t handle = 0;
+    if (!PyArg_ParseTuple(args, "s#|L", &key, &len, &handle)) return NULL;
+    if (len <= 0) { PyErr_SetString(PyExc_ValueError, "key must be non-empty bytes/str"); return NULL; }
+    int rc;
+    int64_t out_handle = -1;
+    bump_u64(&self->python_native_transitions);
+    bump_u64(&self->gil_released_calls);
+    bump_u64(&self->native_put_calls);
+    Py_BEGIN_ALLOW_THREADS
+    rc = put_handle_nogil(self, key, len, handle, &out_handle);
+    Py_END_ALLOW_THREADS
+    if (rc == -1) { PyErr_NoMemory(); return NULL; }
+    if (rc == -2) { PyErr_SetString(PyExc_RuntimeError, "native index is full"); return NULL; }
+    return PyLong_FromLongLong(out_handle);
 }
 
 static int64_t lookup_handle_nogil(NativeHandleIndex *self, const char *key, Py_ssize_t len) {
@@ -226,6 +274,9 @@ static PyObject *NativeHandleIndex_get_handle(NativeHandleIndex *self, PyObject 
     const char *key; Py_ssize_t len;
     if (!PyArg_ParseTuple(args, "s#", &key, &len)) return NULL;
     int64_t out;
+    bump_u64(&self->python_native_transitions);
+    bump_u64(&self->gil_released_calls);
+    bump_u64(&self->native_lookup_calls);
     Py_BEGIN_ALLOW_THREADS
     out = lookup_handle_nogil(self, key, len);
     Py_END_ALLOW_THREADS
@@ -236,6 +287,9 @@ static PyObject *NativeHandleIndex_contains(NativeHandleIndex *self, PyObject *a
     const char *key; Py_ssize_t len;
     if (!PyArg_ParseTuple(args, "s#", &key, &len)) return NULL;
     int64_t out;
+    bump_u64(&self->python_native_transitions);
+    bump_u64(&self->gil_released_calls);
+    bump_u64(&self->native_lookup_calls);
     Py_BEGIN_ALLOW_THREADS
     out = lookup_handle_nogil(self, key, len);
     Py_END_ALLOW_THREADS
@@ -247,6 +301,9 @@ static PyObject *NativeHandleIndex_pop(NativeHandleIndex *self, PyObject *args) 
     const char *key; Py_ssize_t len;
     if (!PyArg_ParseTuple(args, "s#", &key, &len)) return NULL;
     int64_t out;
+    bump_u64(&self->python_native_transitions);
+    bump_u64(&self->gil_released_calls);
+    bump_u64(&self->native_pop_calls);
     Py_BEGIN_ALLOW_THREADS
     out = pop_handle_nogil(self, key, len);
     Py_END_ALLOW_THREADS
@@ -280,6 +337,9 @@ static PyObject *NativeHandleIndex_get_handles(NativeHandleIndex *self, PyObject
             return NULL;
         }
     }
+    bump_u64(&self->python_native_transitions);
+    bump_u64(&self->gil_released_calls);
+    bump_u64(&self->native_batch_lookup_calls);
     Py_BEGIN_ALLOW_THREADS
     lookup_handles_nogil(self, keys, lens, n, out);
     Py_END_ALLOW_THREADS
@@ -327,6 +387,9 @@ static PyObject *NativeHandleIndex_stats(NativeHandleIndex *self, PyObject *Py_U
     Py_ssize_t size = 0, capacity = 0, tombstones = 0, max_probe = 0;
     int64_t next_handle = 0;
     double avg_probe = 0.0;
+    bump_u64(&self->python_native_transitions);
+    bump_u64(&self->gil_released_calls);
+    bump_u64(&self->native_stats_calls);
     Py_BEGIN_ALLOW_THREADS
     stats_scan_nogil(self, &size, &capacity, &tombstones, &next_handle, &max_probe, &avg_probe);
     Py_END_ALLOW_THREADS
@@ -347,6 +410,14 @@ static PyObject *NativeHandleIndex_stats(NativeHandleIndex *self, PyObject *Py_U
     PyDict_SetItemString(d, "gil_released_stats_scan", Py_True);
     PyDict_SetItemString(d, "swiss_control_bytes", Py_True);
     PyDict_SetItemString(d, "probing", PyUnicode_FromString("triangular"));
+    PyDict_SetItemString(d, "gil_released_put", Py_True);
+    PyDict_SetItemString(d, "native_put_calls", PyLong_FromUnsignedLongLong(self->native_put_calls));
+    PyDict_SetItemString(d, "native_lookup_calls", PyLong_FromUnsignedLongLong(self->native_lookup_calls));
+    PyDict_SetItemString(d, "native_batch_lookup_calls", PyLong_FromUnsignedLongLong(self->native_batch_lookup_calls));
+    PyDict_SetItemString(d, "native_pop_calls", PyLong_FromUnsignedLongLong(self->native_pop_calls));
+    PyDict_SetItemString(d, "native_stats_calls", PyLong_FromUnsignedLongLong(self->native_stats_calls));
+    PyDict_SetItemString(d, "gil_released_calls", PyLong_FromUnsignedLongLong(self->gil_released_calls));
+    PyDict_SetItemString(d, "python_native_transitions", PyLong_FromUnsignedLongLong(self->python_native_transitions));
     return d;
 }
 

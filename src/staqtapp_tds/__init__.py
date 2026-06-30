@@ -61,7 +61,7 @@ from staqtapp_tds.secure import SecureParams
 from staqtapp_tds.crypto import CryptoProvider, NoopCryptoProvider, XorCryptoProvider
 from staqtapp_tds.spiral import TraceRecord, TraceSetManifest, AggregationRecord, SpiralRun, SpiralRunMetadata, create_spiral_run
 
-__version__ = "2.3.7"
+__version__ = "2.4.0"
 __all__ = [
     # filesystem
     "TDSFileSystem", "TDSDirectory", "TDSEntry",

@@ -1292,7 +1292,7 @@ class TDSFileSystem:
         asyncio.run(db.awrite("key", value))
         value = asyncio.run(db.aread("key"))
     """
-    VERSION = (2, 3, 0)
+    VERSION = (2, 4, 0)
 
     def __init__(self, name: str = "tds_root", manifest_policy: Optional[ManifestPolicy] = None, runtime_config: Optional[RuntimeConfig] = None, config_registry: Optional[ConfigRegistry] = None, crypto_provider: Optional[CryptoProvider] = None, telemetry_manager: Optional[TelemetryManager] = None):
         self.manifest_policy = manifest_policy or ManifestPolicy.default()
@@ -1333,6 +1333,11 @@ class TDSFileSystem:
             try:
                 stats = node._entry_index.stats()
                 data = stats.__dict__.copy() if hasattr(stats, '__dict__') else dict(stats)
+                if hasattr(node._entry_index, "native_execution_stats"):
+                    try:
+                        self.telemetry_manager.merge_native_execution_stats(node._entry_index.native_execution_stats())
+                    except Exception:
+                        pass
             except Exception:
                 data = {"backend": node._entry_index.backend_name, "size": len(node._entry_index)}
             size = int(data.get("size", data.get("entries", len(node._entry_index))) or 0)
@@ -1349,6 +1354,7 @@ class TDSFileSystem:
             "backends": backends,
             "max_probe": max_probe,
             "average_probe": round(avg_probe_sum / stat_count, 3) if stat_count else 0.0,
+            "gil_released_stats_scan": True,
         }
 
     def _radix_stats_snapshot(self) -> dict:

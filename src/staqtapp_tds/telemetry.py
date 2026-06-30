@@ -185,6 +185,11 @@ class TelemetryManager:
             "gil_released_ops": 0,
             "native_backend_ops": 0,
             "python_backend_ops": 0,
+            "python_native_transitions": 0,
+            "native_batch_ops": 0,
+            "native_execution_ns": 0,
+            "python_execution_ns": 0,
+            "gil_released_ns": 0,
             "spiral_runs": 0,
             "spiral_search_traces": 0,
             "spiral_trace_sets": 0,
@@ -243,6 +248,52 @@ class TelemetryManager:
             self._timers_ns[key] += elapsed
             self._timer_counts[key] += 1
 
+    def record_execution(self, *, python_ns: int = 0, native_ns: int = 0, gil_released_ns: int = 0,
+                         transitions: int = 0, native_ops: int = 0, python_ops: int = 0,
+                         batch_ops: int = 0) -> None:
+        """Record execution-mode telemetry for performance engineering.
+
+        This is intentionally approximate. It measures where TDS work is
+        performed at subsystem boundaries: Python orchestration, native code,
+        and native code run while the GIL is released. The dashboard uses this
+        as engineering feedback; it is not a profiler and it does not inspect
+        payload content.
+        """
+        if not self.enabled:
+            return
+        with self._lock:
+            self._counters["python_execution_ns"] += max(0, int(python_ns))
+            self._counters["native_execution_ns"] += max(0, int(native_ns))
+            self._counters["gil_released_ns"] += max(0, int(gil_released_ns))
+            self._counters["python_native_transitions"] += max(0, int(transitions))
+            self._counters["native_backend_ops"] += max(0, int(native_ops))
+            self._counters["python_backend_ops"] += max(0, int(python_ops))
+            self._counters["native_batch_ops"] += max(0, int(batch_ops))
+            self._counters["gil_released_ops"] += 1 if gil_released_ns or native_ops else 0
+
+    def merge_native_execution_stats(self, stats: Dict[str, object]) -> None:
+        """Merge optional native-extension execution counters into telemetry.
+
+        Native counters are cumulative. This method records a safe snapshot of
+        the current totals so the dashboard can display the state even if the
+        Python hot path has not explicitly recorded every native transition.
+        """
+        if not self.enabled or not isinstance(stats, dict):
+            return
+        with self._lock:
+            for src, dst in (
+                ("python_native_transitions", "python_native_transitions"),
+                ("gil_released_calls", "gil_released_ops"),
+                ("native_batch_lookup_calls", "native_batch_ops"),
+            ):
+                if src in stats:
+                    self._counters[dst] = max(int(self._counters.get(dst, 0)), int(stats.get(src) or 0))
+            native_calls = sum(int(stats.get(k) or 0) for k in (
+                "native_put_calls", "native_lookup_calls", "native_batch_lookup_calls",
+                "native_pop_calls", "native_stats_calls"
+            ))
+            self._counters["native_backend_ops"] = max(int(self._counters.get("native_backend_ops", 0)), native_calls)
+
     def record_read(self, elapsed_ns: int, *, hit: bool = True, backend: str = "") -> None:
         self.incr("reads")
         self.incr("lookups")
@@ -250,14 +301,20 @@ class TelemetryManager:
         self.record_timer("read_ns", elapsed_ns)
         self.record_timer("lookup_ns", elapsed_ns)
         if backend:
-            self.incr("native_backend_ops" if "native" in backend.lower() else "python_backend_ops")
+            is_native = "native" in backend.lower()
+            self.incr("native_backend_ops" if is_native else "python_backend_ops")
+            if is_native:
+                self.incr("gil_released_ops")
 
     def record_write(self, elapsed_ns: int, *, raw_size: int = 0, stored_size: int = 0, backend: str = "") -> None:
         self.incr("writes")
         self.record_timer("write_ns", elapsed_ns)
         self.add_bytes(raw=raw_size, stored=stored_size)
         if backend:
-            self.incr("native_backend_ops" if "native" in backend.lower() else "python_backend_ops")
+            is_native = "native" in backend.lower()
+            self.incr("native_backend_ops" if is_native else "python_backend_ops")
+            if is_native:
+                self.incr("gil_released_ops")
 
     def record_delete(self) -> None:
         self.incr("deletes")
@@ -379,8 +436,19 @@ class TelemetryManager:
                 "lookup_misses": counters.get("lookup_misses", 0),
                 "native_backend_ops": counters.get("native_backend_ops", 0),
                 "python_backend_ops": counters.get("python_backend_ops", 0),
+                "gil_released_ops": counters.get("gil_released_ops", 0),
+                "python_native_transitions": counters.get("python_native_transitions", 0),
+                "python_native_transitions_per_sec": round(counters.get("python_native_transitions", 0) / uptime, 3),
+                "native_batch_ops": counters.get("native_batch_ops", 0),
+                "native_batch_ops_per_sec": round(counters.get("native_batch_ops", 0) / uptime, 3),
                 "timer_samples": sum(timer_counts.values()),
             }
+            native_ops = float(performance.get("native_backend_ops", 0) or 0)
+            python_ops = float(performance.get("python_backend_ops", 0) or 0)
+            total_ops = max(1.0, native_ops + python_ops)
+            performance["native_execution_percent"] = round(100.0 * native_ops / total_ops, 2)
+            performance["python_execution_percent"] = round(100.0 * python_ops / total_ops, 2)
+            performance["gil_released_percent"] = round(100.0 * min(float(performance.get("gil_released_ops", 0) or 0), total_ops) / total_ops, 2)
             storage: Dict[str, float | int | str] = {
                 "bytes_raw": counters.get("bytes_raw", 0),
                 "bytes_stored": counters.get("bytes_stored", 0),
