@@ -6,7 +6,7 @@ from staqtapp_tds.telemetry import TelemetryManager
 
 
 def test_version_centralized_v242():
-    assert __version__ == "2.4.2"
+    assert __version__ == "2.5.0"
 
 
 def test_metadata_records_are_slotted_and_immutable():
