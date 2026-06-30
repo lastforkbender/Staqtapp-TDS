@@ -1,18 +1,16 @@
-# Staqtapp-TDS v2.4.2
+# Staqtapp-TDS v2.5.0
 
-## v2.4.2 — Metadata and Native Execution Hardening
+## v2.5.0 — Hardening and One-Way Telemetry
 
-- Added `staqtapp_tds.version` and centralized `__version__ = "2.4.2"`.
-- Added compact immutable `staqtapp_tds.metadata` records using `@dataclass(slots=True, frozen=True)`.
-- Re-exported Spiral trace, trace-set, and aggregation records from the metadata package while preserving the optional `staqtapp_tds.spiral` API.
-- Added richer ranking provenance fields: rank method, confidence, rank config id, and verifier id.
-- Fixed and validated native extension build configuration with `setup.py`.
-- Added GIL-released native batch insert and batch erase paths.
-- Added internal tiny-key memory-pool reuse counters for the native Swiss index.
-- Added native checksum and UTF-8-safe chunk-boundary helper functions.
-- Added execution telemetry fields for pool reuse and allocator calls.
-- Updated the professional dashboard system panel to display pool reuse and allocator-call feedback.
-- Added v2.4.2 tests for slotted metadata, native batch put/pop, native checksum/chunk bounds, and pool telemetry.
+- Added `TelemetryLevel` with `OFF`, `MINIMAL`, `NORMAL`, `ENGINEERING`, and `DEVELOPER` snapshot detail modes.
+- Added `TelemetryPublisherThread` so dashboards/exporters read the latest immutable snapshot instead of triggering storage-engine sampling directly.
+- Added health state to observation snapshots: status, score, degraded components, snapshot age, telemetry level, and publisher timing.
+- Added `staqtapp_tds.verify` with explicit health checks for telemetry snapshots, runtime config, directory traversal, index consistency, and component status.
+- Added CLI health verification with `staqtapp-tds-admin verify`.
+- Added `RuntimeConfig.telemetry_level` validation for deployment-specific observability levels.
+- Added optional native sanitizer build hooks through `STAQTAPP_TDS_SANITIZE`.
+- Preserved the dashboard as a separated snapshot-only subsystem; hardening checks are explicit and never run from normal dashboard polling.
+- Kept v2.4.2 slotted metadata, native batch paths, checksum/chunk helpers, and memory-pool telemetry intact.
 
 ## v2.4.0 — Native Performance Expansion
 
