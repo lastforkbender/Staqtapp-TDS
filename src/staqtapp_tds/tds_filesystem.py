@@ -26,7 +26,7 @@ from staqtapp_tds.arena import SharedMemoryArena
 from staqtapp_tds.index import EntryIndex
 from staqtapp_tds.capabilities import CapabilityRegistry, ZoneCapability
 from staqtapp_tds.latency import LatencyPolicy
-from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode, TelemetryManager
+from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryLevel, TelemetryMode, TelemetryManager
 from staqtapp_tds.srz import SRZMetadata
 from staqtapp_tds.manifest import ManifestPolicy
 from staqtapp_tds.namespaces import ReservedNamespaces
@@ -1292,13 +1292,14 @@ class TDSFileSystem:
         asyncio.run(db.awrite("key", value))
         value = asyncio.run(db.aread("key"))
     """
-    VERSION = (2, 4, 0)
+    VERSION = (2, 5, 0)
 
     def __init__(self, name: str = "tds_root", manifest_policy: Optional[ManifestPolicy] = None, runtime_config: Optional[RuntimeConfig] = None, config_registry: Optional[ConfigRegistry] = None, crypto_provider: Optional[CryptoProvider] = None, telemetry_manager: Optional[TelemetryManager] = None):
         self.manifest_policy = manifest_policy or ManifestPolicy.default()
         self.config_registry = config_registry or ConfigRegistry(runtime_config or RuntimeConfig.default())
         self.crypto_provider: CryptoProvider = crypto_provider or NoopCryptoProvider()
-        self.telemetry_manager: TelemetryManager = telemetry_manager or TelemetryManager()
+        cfg = self.config_registry.active()
+        self.telemetry_manager: TelemetryManager = telemetry_manager or TelemetryManager(level=getattr(cfg, "telemetry_level", "normal"))
         self.root = TDSDirectory(
             name   = name,
             fmt_id = FmtID.RAW_BINARY,

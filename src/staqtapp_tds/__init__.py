@@ -44,7 +44,7 @@ from staqtapp_tds.manifest import (
     ManifestPolicy, MANIFEST_FILENAME, load_manifest, write_default_manifest,
 )
 from staqtapp_tds.srz import SRZMetadata, SRZ_DTYPE, route_id_for
-from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryMode, TELEMETRY_DTYPE, TelemetryManager, TelemetrySnapshot
+from staqtapp_tds.telemetry import DirectoryTelemetry, TelemetryLevel, TelemetryMode, TELEMETRY_DTYPE, TelemetryManager, TelemetrySnapshot, TelemetryPublisherThread
 from staqtapp_tds.latency import LatencyPolicy, LatencyBucket, classify_latency, latency_ratio
 from staqtapp_tds.capabilities import CapabilityRegistry, ZoneCapability
 from staqtapp_tds.namespaces import ReservedNamespaces
@@ -60,6 +60,7 @@ from staqtapp_tds.config import RuntimeConfig, AdminConfig, ConfigRegistry
 from staqtapp_tds.secure import SecureParams
 from staqtapp_tds.crypto import CryptoProvider, NoopCryptoProvider, XorCryptoProvider
 from staqtapp_tds.spiral import TraceRecord, TraceSetManifest, AggregationRecord, SpiralRun, SpiralRunMetadata, create_spiral_run
+from staqtapp_tds.verify import HealthCheck, HealthReport, HealthVerifier, verify
 
 from staqtapp_tds.version import __version__, VERSION
 __all__ = [
@@ -78,7 +79,7 @@ __all__ = [
     # semantic infrastructure
     "ManifestPolicy", "MANIFEST_FILENAME", "load_manifest", "write_default_manifest",
     "SRZMetadata", "SRZ_DTYPE", "route_id_for",
-    "DirectoryTelemetry", "TelemetryMode", "TELEMETRY_DTYPE", "TelemetryManager", "TelemetrySnapshot",
+    "DirectoryTelemetry", "TelemetryLevel", "TelemetryMode", "TELEMETRY_DTYPE", "TelemetryManager", "TelemetrySnapshot", "TelemetryPublisherThread",
     "LatencyPolicy", "LatencyBucket", "classify_latency", "latency_ratio",
     "CapabilityRegistry", "ZoneCapability", "ReservedNamespaces",
     "TDSResult", "VariableControl", "StalkState", "ErrorTelemetry", "ErrorLogMode",
@@ -87,5 +88,5 @@ __all__ = [
     "ProvenanceTag", "ProvenanceClass", "PROVENANCE_DTYPE",
     "TDSClusterIdentity", "CLUSTER_DTYPE", "query_requires_selector", "RadixDirectoryRouter",
     "RuntimeConfig", "AdminConfig", "ConfigRegistry", "SecureParams", "CryptoProvider", "NoopCryptoProvider", "XorCryptoProvider",
-    "TraceRecord", "TraceSetManifest", "AggregationRecord", "SpiralRun", "SpiralRunMetadata", "create_spiral_run", "VERSION",
+    "TraceRecord", "TraceSetManifest", "AggregationRecord", "SpiralRun", "SpiralRunMetadata", "create_spiral_run", "HealthCheck", "HealthReport", "HealthVerifier", "verify", "VERSION",
 ]

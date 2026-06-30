@@ -35,6 +35,7 @@ class RuntimeConfig:
     admin_panel_enabled: bool = False
     spiral_support_enabled: bool = False
     network_mode: str = "local-only"
+    telemetry_level: str = "normal"
 
     @staticmethod
     def default(config_id: str = "rc-default", generation: int = 1) -> "RuntimeConfig":
@@ -51,6 +52,8 @@ class RuntimeConfig:
             raise ValueError("compression_threshold_bytes cannot be negative")
         if self.network_mode not in {"local-only", "private-api", "external-disabled"}:
             raise ValueError("network_mode must be local-only, private-api, or external-disabled")
+        if str(self.telemetry_level).lower() not in {"off", "minimal", "normal", "engineering", "developer"}:
+            raise ValueError("telemetry_level must be off, minimal, normal, engineering, or developer")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -71,6 +74,7 @@ class RuntimeConfig:
             "admin_panel_enabled": self.admin_panel_enabled,
             "spiral_support_enabled": self.spiral_support_enabled,
             "network_mode": self.network_mode,
+            "telemetry_level": self.telemetry_level,
         }
 
     @classmethod

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from enum import IntEnum
-from typing import Deque, Dict, List
+from typing import Callable, Deque, Dict, List
 
 import numpy as np
 
@@ -17,6 +17,31 @@ class TelemetryMode(IntEnum):
     OFF = 0
     LIGHT = 1
     TRACE = 2
+
+
+class TelemetryLevel(IntEnum):
+    """Snapshot detail levels for the one-way observation layer.
+
+    Levels intentionally gate snapshot assembly, not hot-path counter writes.
+    This keeps production observability cheap while allowing engineering and
+    developer builds to expose richer native-engine diagnostics.
+    """
+
+    OFF = 0
+    MINIMAL = 1
+    NORMAL = 2
+    ENGINEERING = 3
+    DEVELOPER = 4
+
+    @classmethod
+    def coerce(cls, value: "TelemetryLevel | str | int") -> "TelemetryLevel":
+        if isinstance(value, TelemetryLevel):
+            return value
+        if isinstance(value, str):
+            key = value.strip().upper().replace("-", "_")
+            if key in cls.__members__:
+                return cls[key]
+        return cls(int(value))
 
 
 TELEMETRY_DTYPE = np.dtype([
@@ -102,7 +127,7 @@ class DirectoryTelemetry:
         }
 
     def trace_snapshot(self) -> List[Dict[str, int]]:
-        return [r.__dict__.copy() for r in list(self._trace)]
+        return [asdict(r) for r in list(self._trace)]
 
     def restore_snapshot(self, data: Dict[str, int | str]) -> None:
         if not data:
@@ -139,6 +164,7 @@ class TelemetrySnapshot:
     behavior: Dict[str, object]
     recommendations: List[Dict[str, str]]
     components: Dict[str, Dict[str, object]]
+    health: Dict[str, object] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -151,6 +177,7 @@ class TelemetrySnapshot:
             "behavior": dict(self.behavior),
             "recommendations": list(self.recommendations),
             "components": {k: dict(v) for k, v in self.components.items()},
+            "health": dict(self.health),
         }
 
 
@@ -165,9 +192,10 @@ class TelemetryManager:
 
     schema_version = 1
 
-    def __init__(self, *, snapshot_interval_seconds: float = 2.0, enabled: bool = True):
+    def __init__(self, *, snapshot_interval_seconds: float = 2.0, enabled: bool = True, level: TelemetryLevel | str | int = TelemetryLevel.ENGINEERING):
         import threading
-        self.enabled = bool(enabled)
+        self.level = TelemetryLevel.coerce(level)
+        self.enabled = bool(enabled) and self.level != TelemetryLevel.OFF
         self.snapshot_interval_seconds = max(0.25, float(snapshot_interval_seconds))
         self._created_at = time.time()
         self._lock = threading.RLock()
@@ -210,6 +238,62 @@ class TelemetryManager:
         self._samplers: Dict[str, object] = {}
         self._last_snapshot_at = 0.0
         self._last_snapshot: Dict[str, object] | None = None
+        self._published_snapshot: Dict[str, object] | None = None
+        self._publisher_updates = 0
+        self._last_publish_duration_ns = 0
+
+    def set_level(self, level: TelemetryLevel | str | int) -> None:
+        with self._lock:
+            self.level = TelemetryLevel.coerce(level)
+            self.enabled = self.level != TelemetryLevel.OFF
+            self._last_snapshot = None
+
+    def latest_snapshot(self) -> Dict[str, object]:
+        """Return the last immutable published snapshot, building one if needed.
+
+        Dashboard and exporter endpoints should call this instead of directly
+        walking engine internals. When a TelemetryPublisherThread is active, this
+        method is simply a cheap dictionary copy from the latest publication.
+        """
+        with self._lock:
+            if self._published_snapshot is not None:
+                return dict(self._published_snapshot)
+        return self.snapshot(force=True)
+
+    def publish_snapshot(self, snapshot: Dict[str, object], *, duration_ns: int = 0) -> None:
+        with self._lock:
+            self._publisher_updates += 1
+            self._last_publish_duration_ns = max(0, int(duration_ns))
+            snap = dict(snapshot)
+            health = self.health_state(snapshot_age_seconds=0.0)
+            snap["health"] = health
+            snap["system_health"] = str(health.get("state", "healthy")).upper()
+            self._published_snapshot = snap
+
+    def health_state(self, *, snapshot_age_seconds: float | None = None, counters: Dict[str, int] | None = None, components: Dict[str, Dict[str, object]] | None = None) -> Dict[str, object]:
+        counters = counters or dict(self._counters)
+        components = components or dict(self._components)
+        degraded = [name for name, data in components.items() if str(data.get("status", "healthy")).lower() not in {"healthy", "enabled", "disabled"}]
+        errors = int(counters.get("errors", 0))
+        age = 0.0 if snapshot_age_seconds is None else max(0.0, float(snapshot_age_seconds))
+        if not self.enabled:
+            state, score = "disabled", 0
+        elif errors or degraded:
+            state, score = "attention", max(40, 82 - min(42, errors + len(degraded) * 8))
+        elif age > max(10.0, self.snapshot_interval_seconds * 5):
+            state, score = "stale", 70
+        else:
+            state, score = "healthy", 99
+        return {
+            "state": state,
+            "score": score,
+            "errors": errors,
+            "degraded_components": degraded,
+            "snapshot_age_seconds": round(age, 3),
+            "telemetry_level": self.level.name.lower(),
+            "publisher_updates": self._publisher_updates,
+            "last_publish_duration_ms": round(self._last_publish_duration_ns / 1_000_000.0, 3),
+        }
 
     def register_sampler(self, name: str, sampler) -> None:
         with self._lock:
@@ -413,7 +497,12 @@ class TelemetryManager:
             storage_extra: Dict[str, object] = {}
             components = {k: dict(v) for k, v in self._components.items()}
             samplers = dict(self._samplers)
+            level = self.level
         # Invoke samplers outside the manager lock.
+        if level <= TelemetryLevel.MINIMAL:
+            samplers = {}
+        elif level == TelemetryLevel.NORMAL:
+            samplers = {k: v for k, v in samplers.items() if k in {"storage", "components"}}
         for name, sampler in samplers.items():
             try:
                 value = sampler()
@@ -480,6 +569,7 @@ class TelemetryManager:
             storage["spiral"] = spiral
             behavior = self._behavior(counters)
             recs = self._recommendations(counters, indexes, behavior)
+            health = self.health_state(snapshot_age_seconds=0.0, counters=counters, components=components)
             snap = TelemetrySnapshot(
                 schema_version=self.schema_version,
                 created_at=now,
@@ -490,7 +580,53 @@ class TelemetryManager:
                 behavior=behavior,
                 recommendations=recs,
                 components=components,
+                health=health,
             ).to_dict()
+            snap["system_health"] = str(health.get("state", "healthy")).upper()
             self._last_snapshot_at = now
             self._last_snapshot = snap
+            if self._published_snapshot is None:
+                self._published_snapshot = dict(snap)
             return dict(snap)
+
+
+class TelemetryPublisherThread:
+    """Dedicated one-way snapshot publisher for hardening phase 1.
+
+    The thread owns snapshot assembly cadence. Dashboard, Prometheus-style
+    exporters, and CLIs should read ``TelemetryManager.latest_snapshot()`` and
+    never invoke storage-engine samplers directly.
+    """
+
+    def __init__(self, manager: TelemetryManager, *, interval_seconds: float | None = None, name: str = "staqtapp-tds-telemetry"):
+        import threading
+        self.manager = manager
+        self.interval_seconds = max(0.25, float(interval_seconds if interval_seconds is not None else manager.snapshot_interval_seconds))
+        self.name = name
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name=name, daemon=True)
+
+    @property
+    def running(self) -> bool:
+        return self._thread.is_alive()
+
+    def start(self) -> "TelemetryPublisherThread":
+        if not self._thread.is_alive():
+            self._thread.start()
+        return self
+
+    def stop(self, timeout: float | None = 2.0) -> None:
+        self._stop.set()
+        if self._thread.is_alive():
+            self._thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            started = time.perf_counter_ns()
+            try:
+                snap = self.manager.snapshot(force=True)
+                elapsed = time.perf_counter_ns() - started
+                self.manager.publish_snapshot(snap, duration_ns=elapsed)
+            except Exception:
+                self.manager.record_error()
+            self._stop.wait(self.interval_seconds)
