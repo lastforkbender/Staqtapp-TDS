@@ -1,4 +1,4 @@
-"""Python wrapper around the optional v2.1 native handle index."""
+"""Python wrapper around the optional native execution index."""
 from __future__ import annotations
 
 import threading
@@ -33,6 +33,19 @@ class NativeEntryIndexBackend:
             self._keys[handle] = key
         return handle
 
+    def put_many(self, items: List[Tuple[str, Any]]) -> List[int]:
+        """Insert many key/value pairs with one native transition."""
+        pairs = list(items)
+        if not pairs:
+            return []
+        encoded = [k.encode("utf-8") for k, _ in pairs]
+        handles = [int(h) for h in self._index.put_many(encoded)]
+        with self._lock:
+            for (key, entry), handle in zip(pairs, handles):
+                self._values[handle] = entry
+                self._keys[handle] = key
+        return handles
+
     def get_handle(self, key: str) -> int:
         return int(self._index.get_handle(key.encode("utf-8")))
 
@@ -61,6 +74,19 @@ class NativeEntryIndexBackend:
         with self._lock:
             self._keys.pop(handle, None)
             return self._values.pop(handle, default)
+
+    def pop_many(self, keys: List[str], default: Optional[Any] = None) -> List[Optional[Any]]:
+        encoded = [k.encode("utf-8") for k in keys]
+        handles = [int(h) for h in self._index.pop_many(encoded)]
+        out: List[Optional[Any]] = []
+        with self._lock:
+            for handle in handles:
+                if handle < 0:
+                    out.append(default)
+                else:
+                    self._keys.pop(handle, None)
+                    out.append(self._values.pop(handle, default))
+        return out
 
     def keys(self) -> List[str]:
         with self._lock:
@@ -101,11 +127,20 @@ class NativeEntryIndexBackend:
             "gil_released_get_handles": bool(s.get("gil_released_get_handles", False)),
             "gil_released_pop_lookup": bool(s.get("gil_released_pop_lookup", False)),
             "gil_released_stats_scan": bool(s.get("gil_released_stats_scan", False)),
+            "gil_released_put_many": bool(s.get("gil_released_put_many", False)),
+            "gil_released_pop_many": bool(s.get("gil_released_pop_many", False)),
             "native_put_calls": int(s.get("native_put_calls", 0)),
+            "native_batch_put_calls": int(s.get("native_batch_put_calls", 0)),
             "native_lookup_calls": int(s.get("native_lookup_calls", 0)),
             "native_batch_lookup_calls": int(s.get("native_batch_lookup_calls", 0)),
             "native_pop_calls": int(s.get("native_pop_calls", 0)),
+            "native_batch_pop_calls": int(s.get("native_batch_pop_calls", 0)),
             "native_stats_calls": int(s.get("native_stats_calls", 0)),
+            "native_checksum_calls": int(s.get("native_checksum_calls", 0)),
+            "native_chunk_scan_calls": int(s.get("native_chunk_scan_calls", 0)),
             "gil_released_calls": int(s.get("gil_released_calls", 0)),
             "python_native_transitions": int(s.get("python_native_transitions", 0)),
+            "pool_reuse_count": int(s.get("pool_reuse_count", 0)),
+            "pool_allocator_calls": int(s.get("pool_allocator_calls", 0)),
+            "pool_frees": int(s.get("pool_frees", 0)),
         }
