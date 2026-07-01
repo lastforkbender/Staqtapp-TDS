@@ -11,8 +11,8 @@ from staqtapp_tds import (
 from staqtapp_tds.config import RuntimeConfig
 
 
-def test_version_v250():
-    assert __version__ == "2.5.0"
+def test_version_v251():
+    assert __version__ == "2.6.0"
 
 
 def test_telemetry_levels_gate_engineering_samplers():
@@ -68,3 +68,27 @@ def test_runtime_config_telemetry_level_validation():
         assert "telemetry_level" in str(exc)
     else:
         raise AssertionError("invalid telemetry level accepted")
+
+
+def test_local_admin_default_secret_refuses_nonlocal_bind():
+    from staqtapp_tds.admin import AdminControl, LocalAuthProvider
+    from staqtapp_tds.admin.panel import AdminPanelServer
+
+    control = AdminControl(auth=LocalAuthProvider())
+    AdminPanelServer(control=control, host="127.0.0.1")
+    try:
+        AdminPanelServer(control=control, host="0.0.0.0")
+    except ValueError as exc:
+        assert "local-dev-admin-secret" in str(exc)
+    else:
+        raise AssertionError("default admin secret allowed non-local bind")
+
+
+def test_execution_timeline_is_snapshot_cached():
+    tm = TelemetryManager(snapshot_interval_seconds=0.25, level="engineering")
+    tm.record_execution(native_ops=3, python_ops=1, transitions=2, gil_released_ns=100)
+    snap = tm.snapshot(force=True)
+    timeline = snap["performance"]["execution_timeline"]
+    assert timeline
+    assert timeline[-1]["native_execution_percent"] >= 70
+    assert snap["performance"]["gil_released_ops_per_sec"] >= 0
