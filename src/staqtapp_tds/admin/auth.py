@@ -1,6 +1,6 @@
 from __future__ import annotations
 from dataclasses import dataclass, field
-import hmac, secrets, time
+import hmac, os, secrets, time
 
 @dataclass(frozen=True)
 class ConfigGrant:
@@ -21,9 +21,22 @@ class ConfigGrant:
         return hmac.compare_digest(expected, self.signature)
 
 class LocalAuthProvider:
-    def __init__(self, secret: str = "local-dev-admin-secret", default_subject: str = "local-admin"):
-        self.secret = secret
+    DEV_SECRET = "local-dev-admin-secret"
+
+    def __init__(self, secret: str | None = None, default_subject: str = "local-admin", *, allow_dev_secret: bool | None = None):
+        resolved = secret or os.environ.get("STAQTAPP_TDS_ADMIN_SECRET") or self.DEV_SECRET
+        if allow_dev_secret is None:
+            allow_dev_secret = resolved == self.DEV_SECRET
+        if resolved == self.DEV_SECRET and not allow_dev_secret:
+            raise ValueError("STAQTAPP_TDS_ADMIN_SECRET must override the local development admin secret outside localhost/dev mode")
+        self.secret = resolved
         self.default_subject = default_subject
+        self.using_dev_secret = resolved == self.DEV_SECRET
+
+    def assert_safe_for_bind(self, host: str) -> None:
+        local_hosts = {"", "localhost", "127.0.0.1", "::1"}
+        if self.using_dev_secret and str(host).strip().lower() not in local_hosts:
+            raise ValueError("Refusing non-local admin bind with default local-dev-admin-secret; set STAQTAPP_TDS_ADMIN_SECRET or pass a unique secret")
     def issue(self, action: str, *, subject: str | None = None, ttl_seconds: int = 300) -> ConfigGrant:
         issued = time.time(); expires = issued + ttl_seconds; nonce = secrets.token_hex(12)
         subj = subject or self.default_subject

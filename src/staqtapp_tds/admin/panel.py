@@ -57,6 +57,9 @@ class AdminPanelServer:
         self.control = control or AdminControl()
         self.host = host
         self.port = port
+        auth = getattr(self.control, "auth", None)
+        if hasattr(auth, "assert_safe_for_bind"):
+            auth.assert_safe_for_bind(host)
 
     def _status_snapshot(self) -> dict[str, object]:
         snap = self.control.status()
